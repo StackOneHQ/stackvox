@@ -97,6 +97,46 @@ class Stackvox:
     def voices(self) -> list[str]:
         return sorted(self._kokoro.get_voices())
 
+    def speak_sequence(
+        self,
+        lines: list[dict],
+        gap_seconds: float = 0.0,
+        concurrent: bool = True,
+    ) -> None:
+        """Synthesize multiple lines, concatenate, play as one gapless buffer.
+
+        Each line is a dict: {"text": str, "voice": str?, "speed": float?, "lang": str?}.
+        With concurrent=True, synthesis happens in parallel threads (ONNX runtime
+        releases the GIL) so the upfront wait is closer to the longest single
+        synthesis rather than the sum of all of them.
+        """
+        if not lines:
+            return
+
+        def synth(line: dict) -> tuple[np.ndarray, int]:
+            kwargs = {k: v for k, v in line.items() if k != "text"}
+            return self.synthesize(line["text"], **kwargs)
+
+        if concurrent and len(lines) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=len(lines)) as pool:
+                results = list(pool.map(synth, lines))
+        else:
+            results = [synth(line) for line in lines]
+
+        sample_rate = results[0][1]
+        segments: list[np.ndarray] = []
+        gap = np.zeros(int(sample_rate * gap_seconds), dtype=results[0][0].dtype) if gap_seconds > 0 else None
+        for idx, (samples, _) in enumerate(results):
+            segments.append(samples)
+            if gap is not None and idx < len(results) - 1:
+                segments.append(gap)
+
+        audio = np.concatenate(segments)
+        sd.play(audio, sample_rate)
+        sd.wait()
+
 
 _default: Optional[Stackvox] = None
 

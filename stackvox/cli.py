@@ -11,7 +11,16 @@ import soundfile as sf
 from stackvox import daemon
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
 
-SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices"}
+SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices", "welcome"}
+
+WELCOME_LINES = [
+    ("bf_emma", "en-gb", "Welcome to stackvox."),
+    ("af_heart", "en-us", "Welcome to stackvox."),
+    ("ff_siwis", "fr-fr", "Bienvenue sur stackvox."),
+    ("hf_alpha", "hi", "Stackvox mein aapka swagat hai."),
+    ("if_sara", "it", "Benvenuti a stackvox."),
+    ("pf_dora", "pt-br", "Bem-vindo ao stackvox."),
+]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -36,6 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stop", help="Stop the running daemon")
     sub.add_parser("status", help="Print daemon status")
     sub.add_parser("voices", help="List available voices")
+    sub.add_parser("welcome", help="Play a multilingual welcome message")
 
     return parser
 
@@ -119,6 +129,14 @@ def _cmd_voices(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_welcome(_: argparse.Namespace) -> int:
+    tts = Stackvox()
+    tts.speak_sequence(
+        [{"text": text, "voice": voice, "lang": lang} for voice, lang, text in WELCOME_LINES]
+    )
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     # Back-compat: `stackvox "text"` with no subcommand → speak.
@@ -139,6 +157,7 @@ def main() -> int:
         "stop": _cmd_stop,
         "status": _cmd_status,
         "voices": _cmd_voices,
+        "welcome": _cmd_welcome,
     }
     return handlers[args.cmd](args)
 
