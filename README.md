@@ -1,50 +1,139 @@
 # stackvox
 
-Offline TTS library using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Apache 2.0, ~340MB, CPU real-time, plays straight to system audio.
+Offline TTS using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Apache 2.0 model, ~340MB, CPU real-time, plays straight to system audio. Designed to be importable as a Python library, drivable as a CLI, or poked via a unix socket for ~13ms speech requests from shell scripts.
 
 ## Install
 
+Recommended — install globally with pipx so `stackvox` and `stackvox-say` end up on PATH:
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+pipx install git+https://github.com/StackOneHQ/stackvox.git
+```
+
+Upgrade later with `pipx install --force git+https://github.com/StackOneHQ/stackvox.git` (pipx's `upgrade` doesn't always detect new commits on git installs).
+
+Dev install from a clone:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Model + voices auto-download to `~/.cache/stackvox/` on first use (override with `STACKVOX_CACHE_DIR`).
+Model + voice files auto-download to `~/.cache/stackvox/` on first use. Override with `STACKVOX_CACHE_DIR`.
 
-## Library usage
+## CLI
+
+```bash
+stackvox "Hello world"              # synthesize and play in-process
+stackvox speak "Hi" --voice bf_emma # same, explicit subcommand
+stackvox speak "save" --out a.wav   # write wav instead of playing
+stackvox welcome                    # multilingual welcome (6 languages)
+stackvox voices                     # list all voice ids
+```
+
+Daemon mode (keeps the model resident so each subsequent call is instant):
+
+```bash
+stackvox serve         # foreground; run with `nohup stackvox serve &` to background
+stackvox status        # is the daemon up?
+stackvox say "Hello"   # send text to the daemon (fails if not running)
+stackvox stop          # graceful shutdown
+```
+
+## `stackvox-say` (bash helper, ~13ms)
+
+When you want minimum latency from shell scripts (hooks, CI steps, etc.), skip the Python client and use the bash helper — it talks directly to the daemon's unix socket via `nc`:
+
+```bash
+stackvox-say "back to you in 5"
+stackvox-say --voice bf_emma --speed 1.1 "hello"
+stackvox-say --fallback-say "text"     # shell out to macOS `say` if daemon is down
+```
+
+Exit codes: `0` ok, `2` daemon unreachable (unless `--fallback-say` was given).
+
+## Python library
 
 ```python
-from stackvox import Stackvox, speak
+from stackvox import Stackvox, speak, synthesize
 
-# One-shot — model loads on first call, cached for subsequent calls
+# One-shot — model loads on first call, reused for subsequent calls.
 speak("Hello world")
 
-# Reusable engine
+# Reusable engine.
 tts = Stackvox(voice="af_bella")
 tts.speak("First line")
 tts.speak("Faster", speed=1.2)
 
-# Non-blocking
+# Non-blocking playback.
 tts.speak("async", blocking=False)
 tts.stop()
 
-# Raw samples (numpy array + sample rate)
+# Raw samples for custom processing.
 samples, sr = tts.synthesize("give me the array")
+
+# Gapless multi-line playback with concurrent synthesis.
+tts.speak_sequence([
+    {"text": "Hello", "voice": "af_heart", "lang": "en-us"},
+    {"text": "Bonjour", "voice": "ff_siwis", "lang": "fr-fr"},
+])
 ```
 
-## CLI
+### Daemon client from Python
 
-Installed as `stackvox` when you `pip install -e .`:
+```python
+from stackvox import daemon
 
-```bash
-stackvox "Hello world"                 # play
-stackvox "Hi" --voice bf_emma          # different voice
-stackvox "Save" --out out.wav          # write instead of play
-stackvox --file script.txt
-stackvox --list-voices
+ok, resp = daemon.say("queue this via the running daemon")
+if daemon.is_running():
+    daemon.stop()
 ```
 
 ## Voices
 
-`af_*` / `am_*` = American female/male, `bf_*` / `bm_*` = British. Run `--list-voices` for the full set.
+Kokoro ships voices across several languages. Voice prefix encodes gender + language:
+
+| Prefix         | Language         | Example                  |
+| -------------- | ---------------- | ------------------------ |
+| `af_*`, `am_*` | American English | `af_heart`, `am_michael` |
+| `bf_*`, `bm_*` | British English  | `bf_emma`, `bm_fable`    |
+| `ff_*`         | French           | `ff_siwis`               |
+| `hf_*`, `hm_*` | Hindi            | `hf_alpha`, `hm_omega`   |
+| `if_*`, `im_*` | Italian          | `if_sara`, `im_nicola`   |
+| `pf_*`, `pm_*` | Portuguese       | `pf_dora`, `pm_alex`     |
+| `ef_*`, `em_*` | Spanish          | `ef_dora`, `em_alex`     |
+| `jf_*`, `jm_*` | Japanese         | `jf_alpha`               |
+| `zf_*`, `zm_*` | Mandarin Chinese | `zf_xiaoxiao`            |
+
+Run `stackvox voices` for the authoritative list.
+
+## Architecture
+
+```
+┌────────────────────┐      unix socket           ┌─────────────────────────┐
+│  stackvox-say      │ ───────────────────────▶   │  stackvox daemon        │
+│  (bash, ~13ms)     │   JSON line per request    │  (Python, long-lived)   │
+└────────────────────┘                            │                         │
+┌────────────────────┐      ~500ms (Py startup)   │  preloaded Kokoro ONNX  │
+│  stackvox say      │ ───────────────────────▶   │  worker thread playback │
+│  (Python client)   │                            │  → sounddevice → audio  │
+└────────────────────┘                            └─────────────────────────┘
+┌────────────────────┐
+│  stackvox speak    │   loads model in-process, plays, exits
+│  (one-shot CLI)    │
+└────────────────────┘
+```
+
+Socket lives at `~/.cache/stackvox/daemon.sock` (override with `STACKVOX_SOCKET` for the client, `STACKVOX_CACHE_DIR` for the daemon). Protocol is one line of JSON per connection: `{"text":"...", "voice":"...", "speed":1.0, "lang":"en-us"}`; reply is `ok` / `busy` / `err: <msg>`. Plain text (no JSON) is accepted as a fallback and treated as `{"text": line}`.
+
+Queue depth is 2 — rapid-fire requests beyond that get `busy` rather than piling up.
+
+## Requirements
+
+- Python 3.10+
+- macOS or Linux
+- `nc` (BSD netcat — default on macOS, `netcat-openbsd` on Linux) for the bash helper
+
+## License
+
+Apache 2.0 (matches the Kokoro-82M model it depends on).
