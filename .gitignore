@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+*.onnx
+*.bin
+out/
+*.wav
+.DS_Store
+.env

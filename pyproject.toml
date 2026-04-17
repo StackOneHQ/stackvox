@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stackvox"
+version = "0.1.0"
+description = "Offline TTS library using Kokoro-82M"
+requires-python = ">=3.10"
+dependencies = [
+    "kokoro-onnx>=0.4.0",
+    "soundfile>=0.12.1",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+]
+
+[project.scripts]
+stackvox = "stackvox.cli:main"
+
+[tool.setuptools]
+script-files = ["bin/stackvox-say"]
+
+[tool.setuptools.packages.find]
+include = ["stackvox*"]
