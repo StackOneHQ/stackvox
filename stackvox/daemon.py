@@ -14,21 +14,26 @@ Replies: "ok", "busy", "err: <msg>".
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import signal
 import socket
 import socketserver
-import sys
 import threading
-from pathlib import Path
-from typing import Optional
 
-from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox, _cache_dir
+from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
+from stackvox.paths import pid_path, socket_path
 
-SOCKET_PATH = _cache_dir() / "daemon.sock"
-PID_PATH = _cache_dir() / "daemon.pid"
+logger = logging.getLogger(__name__)
+
+SOCKET_PATH = socket_path()
+PID_PATH = pid_path()
 MAX_QUEUE = 2
+WORKER_POLL_SECONDS = 0.5
+CLIENT_TIMEOUT_SECONDS = 1.0
+PING_TIMEOUT_SECONDS = 0.5
+RECV_BYTES = 1024
 
 
 class _DaemonState:
@@ -42,7 +47,7 @@ class _DaemonState:
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
-                req = self.queue.get(timeout=0.5)
+                req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
             try:
@@ -52,8 +57,8 @@ class _DaemonState:
                     speed=req.get("speed"),
                     lang=req.get("lang"),
                 )
-            except Exception as exc:
-                print(f"[stackvox] playback error: {exc}", file=sys.stderr)
+            except Exception:
+                logger.exception("playback error")
 
     def submit(self, req: dict) -> bool:
         try:
@@ -144,7 +149,7 @@ def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
-    print(f"[stackvox] daemon listening on {SOCKET_PATH} (pid {os.getpid()})", file=sys.stderr)
+    logger.info("daemon listening on %s (pid %d)", SOCKET_PATH, os.getpid())
     try:
         server.serve_forever()
     finally:
@@ -152,7 +157,7 @@ def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = 
         PID_PATH.unlink(missing_ok=True)
 
 
-def send(req: dict, timeout: float = 1.0) -> tuple[bool, str]:
+def send(req: dict, timeout: float = CLIENT_TIMEOUT_SECONDS) -> tuple[bool, str]:
     """Send a request to the daemon. Returns (ok, response)."""
     if not SOCKET_PATH.exists():
         return False, "daemon not running"
@@ -161,15 +166,17 @@ def send(req: dict, timeout: float = 1.0) -> tuple[bool, str]:
     try:
         sock.connect(str(SOCKET_PATH))
         sock.sendall((json.dumps(req) + "\n").encode("utf-8"))
-        resp = sock.recv(1024).decode("utf-8", errors="replace").strip()
+        resp = sock.recv(RECV_BYTES).decode("utf-8", errors="replace").strip()
         return resp == "ok", resp
-    except (ConnectionRefusedError, FileNotFoundError, socket.timeout, OSError) as exc:
+    except (TimeoutError, ConnectionRefusedError, FileNotFoundError, OSError) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     finally:
         sock.close()
 
 
-def say(text: str, voice: Optional[str] = None, speed: Optional[float] = None, lang: Optional[str] = None) -> tuple[bool, str]:
+def say(
+    text: str, voice: str | None = None, speed: float | None = None, lang: str | None = None
+) -> tuple[bool, str]:
     req: dict = {"text": text}
     if voice is not None:
         req["voice"] = voice
@@ -185,4 +192,4 @@ def stop() -> tuple[bool, str]:
 
 
 def ping() -> tuple[bool, str]:
-    return send({"command": "ping"}, timeout=0.5)
+    return send({"command": "ping"}, timeout=PING_TIMEOUT_SECONDS)

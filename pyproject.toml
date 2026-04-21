@@ -6,13 +6,37 @@ build-backend = "setuptools.build_meta"
 name = "stackvox"
 version = "0.1.0"
 description = "Offline TTS library using Kokoro-82M"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "StackOne Technologies Ltd.", email = "engineering@stackone.com" }]
+keywords = ["tts", "kokoro", "onnx", "offline", "speech"]
+classifiers = [
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = [
     "kokoro-onnx>=0.4.0",
     "soundfile>=0.12.1",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/StackOneHQ/stackvox"
+Repository = "https://github.com/StackOneHQ/stackvox"
+Issues = "https://github.com/StackOneHQ/stackvox/issues"
 
 [project.scripts]
 stackvox = "stackvox.cli:main"
@@ -22,3 +46,28 @@ script-files = ["bin/stackvox-say"]
 
 [tool.setuptools.packages.find]
 include = ["stackvox*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+]
+ignore = [
+    "E501", # line length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"] # allow bare asserts in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

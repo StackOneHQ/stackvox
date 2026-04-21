@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -10,6 +11,15 @@ import soundfile as sf
 
 from stackvox import daemon
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[stackvox] %(message)s",
+        stream=sys.stderr,
+    )
+
 
 SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices", "welcome"}
 
@@ -37,7 +47,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_voice_args(p_say)
     p_say.add_argument("text", nargs="?")
     p_say.add_argument("--file", type=Path)
-    p_say.add_argument("--fallback-say", action="store_true", help="Shell out to macOS `say` if daemon unreachable")
+    p_say.add_argument(
+        "--fallback-say", action="store_true", help="Shell out to macOS `say` if daemon unreachable"
+    )
 
     p_serve = sub.add_parser("serve", help="Run the daemon in the foreground")
     _add_voice_args(p_serve)
@@ -131,13 +143,12 @@ def _cmd_voices(args: argparse.Namespace) -> int:
 
 def _cmd_welcome(_: argparse.Namespace) -> int:
     tts = Stackvox()
-    tts.speak_sequence(
-        [{"text": text, "voice": voice, "lang": lang} for voice, lang, text in WELCOME_LINES]
-    )
+    tts.speak_sequence([{"text": text, "voice": voice, "lang": lang} for voice, lang, text in WELCOME_LINES])
     return 0
 
 
 def main() -> int:
+    _configure_logging()
     argv = sys.argv[1:]
     # Back-compat: `stackvox "text"` with no subcommand → speak.
     if argv and argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):

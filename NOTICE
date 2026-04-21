@@ -1,0 +1,62 @@
+stackvox
+Copyright 2026 StackOne Technologies Ltd.
+
+This product includes software developed by StackOne Technologies Ltd.
+(https://www.stackone.com/) and is licensed under the Apache License,
+Version 2.0. A copy of the license is provided in the LICENSE file.
+
+--------------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------------
+
+This product relies on, but does not bundle, the following components. They
+are downloaded or installed separately at install / first-run time. Their
+original copyright notices and license terms apply; see the URLs below for
+the authoritative text.
+
+Kokoro-82M (TTS model weights and voice files)
+  Copyright (c) hexgrad
+  Licensed under the Apache License, Version 2.0
+  https://huggingface.co/hexgrad/Kokoro-82M
+
+  stackvox downloads the ONNX-converted model (`kokoro-v1.0.onnx`) and voice
+  pack (`voices-v1.0.bin`) from the kokoro-onnx GitHub release assets on
+  first use and caches them under `~/.cache/stackvox/`. These files are
+  neither modified nor redistributed by stackvox.
+
+kokoro-onnx
+  Copyright (c) 2025 github.com/thewh1teagle
+  Licensed under the MIT License
+  https://github.com/thewh1teagle/kokoro-onnx
+
+onnxruntime
+  Copyright (c) Microsoft Corporation
+  Licensed under the MIT License
+  https://github.com/microsoft/onnxruntime
+
+numpy
+  Copyright (c) 2005-2024, NumPy Developers
+  Licensed under the BSD 3-Clause License
+  https://numpy.org/
+
+sounddevice
+  Copyright (c) 2015-2025 Matthias Geier
+  Licensed under the MIT License
+  https://python-sounddevice.readthedocs.io/
+
+soundfile (pysoundfile)
+  Copyright (c) 2013, Bastian Bechtold
+  Licensed under the BSD 3-Clause License
+  https://github.com/bastibe/python-soundfile
+
+phonemizer-fork
+  Licensed under the GNU General Public License v3.0
+  https://github.com/bootphon/phonemizer
+
+  phonemizer-fork is a transitive runtime dependency of kokoro-onnx. It is
+  installed by pip alongside stackvox but is neither modified, bundled, nor
+  statically linked into stackvox itself — stackvox and phonemizer-fork
+  communicate only through phonemizer-fork's published Python interface at
+  runtime. Downstream users who distribute a combined work that includes
+  phonemizer-fork should review GPL-3.0 obligations for their own
+  distribution.

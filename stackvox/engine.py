@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import os
-import sys
+import logging
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import sounddevice as sd
 from kokoro_onnx import Kokoro
+
+from stackvox.paths import cache_dir as _default_cache_dir
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_VOICE = "af_sarah"
 DEFAULT_SPEED = 1.0
@@ -20,13 +22,6 @@ _MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/mode
 _VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
 
-def _cache_dir() -> Path:
-    override = os.environ.get("STACKVOX_CACHE_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".cache" / "stackvox"
-
-
 def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     model_path = cache_dir / "kokoro-v1.0.onnx"
@@ -34,7 +29,7 @@ def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     for path, url in [(model_path, _MODEL_URL), (voices_path, _VOICES_URL)]:
         if path.exists():
             continue
-        print(f"[stackvox] downloading {path.name}...", file=sys.stderr)
+        logger.info("downloading %s...", path.name)
         urllib.request.urlretrieve(url, path)
     return model_path, voices_path
 
@@ -52,20 +47,20 @@ class Stackvox:
         voice: str = DEFAULT_VOICE,
         speed: float = DEFAULT_SPEED,
         lang: str = DEFAULT_LANG,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.voice = voice
         self.speed = speed
         self.lang = lang
-        model_path, voices_path = _ensure_models(cache_dir or _cache_dir())
+        model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
         self._kokoro = Kokoro(str(model_path), str(voices_path))
 
     def synthesize(
         self,
         text: str,
-        voice: Optional[str] = None,
-        speed: Optional[float] = None,
-        lang: Optional[str] = None,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
     ) -> tuple[np.ndarray, int]:
         """Return (samples, sample_rate) without playing."""
         samples, sample_rate = self._kokoro.create(
@@ -79,9 +74,9 @@ class Stackvox:
     def speak(
         self,
         text: str,
-        voice: Optional[str] = None,
-        speed: Optional[float] = None,
-        lang: Optional[str] = None,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
         blocking: bool = True,
     ) -> None:
         """Synthesize and play through the system default output device."""
@@ -138,7 +133,7 @@ class Stackvox:
         sd.wait()
 
 
-_default: Optional[Stackvox] = None
+_default: Stackvox | None = None
 
 
 def _get_default() -> Stackvox:
