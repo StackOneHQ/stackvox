@@ -9,19 +9,26 @@ Offline TTS using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [k
 
 ## Install
 
-Recommended — install globally with pipx so `stackvox` and `stackvox-say` end up on PATH:
+From PyPI — recommended for most users:
+
+```bash
+pipx install stackvox    # global CLI (`stackvox` and `stackvox-say` on PATH)
+# or
+pip install stackvox     # use as a library
+```
+
+From git, if you want an unreleased commit:
 
 ```bash
 pipx install git+https://github.com/StackOneHQ/stackvox.git
+# upgrade later with: pipx install --force git+https://github.com/StackOneHQ/stackvox.git
 ```
-
-Upgrade later with `pipx install --force git+https://github.com/StackOneHQ/stackvox.git` (pipx's `upgrade` doesn't always detect new commits on git installs).
 
 Dev install from a clone:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 Model + voice files auto-download to `~/.cache/stackvox/` on first use. Override with `STACKVOX_CACHE_DIR`.

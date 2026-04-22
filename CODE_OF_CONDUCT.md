@@ -10,7 +10,7 @@ This Code of Conduct applies within all project spaces, and also applies when an
 
 ## Enforcement
 
-Concerns about conduct can be reported by emailing **engineering@stackone.com**. All reports will be reviewed and investigated promptly and fairly. Project maintainers are obligated to respect the privacy and safety of the reporter.
+Concerns about conduct can be reported by emailing **support@stackone.com**. All reports will be reviewed and investigated promptly and fairly. Project maintainers are obligated to respect the privacy and safety of the reporter.
 
 Maintainers who do not follow or enforce the Code of Conduct in good faith may face temporary or permanent repercussions as determined by other members of the project's leadership.
 
