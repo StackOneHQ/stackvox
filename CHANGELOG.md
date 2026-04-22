@@ -4,6 +4,14 @@ All notable changes to stackvox are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/StackOneHQ/stackvox/compare/stackvox-v0.2.0...stackvox-v0.3.0) (2026-04-22)
+
+
+### Features
+
+* refresh audio devices before each daemon play ([1b15de7](https://github.com/StackOneHQ/stackvox/commit/1b15de7ed1c23946bdd3a9711b6d88dd5178a39d))
+* **stackvox:** first commit ([0ad7de6](https://github.com/StackOneHQ/stackvox/commit/0ad7de60d30d2b88021726346c670361e059d482))
+
 ## [Unreleased]
 
 ### Added
