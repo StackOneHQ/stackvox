@@ -75,6 +75,32 @@ jobs:
           # CODECOV_TOKEN is optional for public repos; if set we use it.
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  test-macos:
+    # Separate job so the existing `test (pyX.Y)` check names stay stable
+    # (the main ruleset already requires them). stackvox is primarily a
+    # macOS-first tool — the PortAudio-refresh fix, the `say` fallback, and
+    # the stackone-say-hooks plugin use case all live on macOS — so we
+    # validate against at least one Python version on macos-latest.
+    name: test macos (py${{ matrix.python }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      # phonemizer (pulled in by kokoro-onnx) shells out to espeak-ng.
+      # PortAudio is bundled by sounddevice's macOS wheel so we don't
+      # install it separately.
+      - name: install espeak-ng
+        run: brew install espeak-ng
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
   commits:
     name: commit message lint
     # Only meaningful on PRs (compare base..HEAD). Skip on push-to-main.
