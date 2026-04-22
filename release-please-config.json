@@ -1,0 +1,11 @@
+{
+    "packages": {
+        ".": {
+            "release-type": "python",
+            "package-name": "stackvox",
+            "bump-minor-pre-major": true,
+            "include-v-in-tag": true,
+            "changelog-path": "CHANGELOG.md"
+        }
+    }
+}

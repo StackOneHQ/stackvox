@@ -10,9 +10,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - `CODE_OF_CONDUCT.md` adopting Contributor Covenant 2.1.
 - GitHub issue templates (bug report, feature request) and a PR template.
-- README badges for CI status, Python version, and license.
+- README badges for CI status, coverage, Python version, and license.
 - `stackvox/py.typed` marker so downstream type checkers pick up the inline type hints.
 - `.github/dependabot.yml` — weekly pip and GitHub Actions updates.
+- Release automation via [release-please](https://github.com/googleapis/release-please): merging conventional-commit PRs rolls a release PR that, when merged, tags the commit and publishes to PyPI via Trusted Publishing (OIDC — no API tokens stored in the repo).
+- PR-title validation workflow (`amannn/action-semantic-pull-request`) — important for squash-merge flows where the PR title becomes the commit message on main.
+- mypy type-checking — configured in `[tool.mypy]` with pragmatic strictness, run as a dedicated CI job.
+- Test coverage reporting via `pytest-cov`, uploaded to Codecov (public-repo tokenless, or via `CODECOV_TOKEN` if set).
+
+### Changed
+
+- Removed the tag-triggered `release.yml` workflow — release-please supersedes it.
+- `[tool.commitizen]` trimmed to commit-message validation only; version bumps and CHANGELOG entries are now owned by release-please.
 
 ## [0.2.0] - 2026-04-22
 

@@ -26,6 +26,22 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
 
+  types:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Installing the package (plus dev extras) gives mypy real types for
+      # numpy & friends and avoids module-not-found noise.
+      - name: install system audio/phoneme deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libportaudio2 espeak-ng
+      - run: pip install -e ".[dev]"
+      - run: mypy
+
   test:
     name: test (py${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -43,7 +59,21 @@ jobs:
       - name: install system audio/phoneme deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libportaudio2 espeak-ng
       - run: pip install -e ".[dev]"
-      - run: pytest
+      - name: run tests (with coverage on 3.12)
+        run: |
+          if [ "${{ matrix.python }}" = "3.12" ]; then
+            pytest --cov=stackvox --cov-report=xml --cov-report=term
+          else
+            pytest
+          fi
+      - name: upload coverage to Codecov
+        if: matrix.python == '3.12'
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          # CODECOV_TOKEN is optional for public repos; if set we use it.
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   commits:
     name: commit message lint

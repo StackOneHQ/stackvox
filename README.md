@@ -1,6 +1,7 @@
 # stackvox
 
 [![ci](https://github.com/StackOneHQ/stackvox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/StackOneHQ/stackvox/actions/workflows/ci.yml)
+[![coverage](https://codecov.io/gh/StackOneHQ/stackvox/branch/main/graph/badge.svg)](https://codecov.io/gh/StackOneHQ/stackvox)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![license](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 

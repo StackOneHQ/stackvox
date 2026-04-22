@@ -161,7 +161,7 @@ def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = 
 
     PID_PATH.write_text(str(os.getpid()))
 
-    def handle_signal(signum: int, frame) -> None:  # type: ignore[no-untyped-def]
+    def handle_signal(signum: int, frame: object) -> None:
         state.shutdown()
         threading.Thread(target=server.shutdown, daemon=True).start()
 

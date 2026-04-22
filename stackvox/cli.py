@@ -69,9 +69,11 @@ def _add_voice_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _read_text(args: argparse.Namespace) -> str | None:
-    if getattr(args, "file", None):
-        return args.file.read_text()
-    return getattr(args, "text", None)
+    file: Path | None = getattr(args, "file", None)
+    if file is not None:
+        return file.read_text(encoding="utf-8")
+    text: str | None = getattr(args, "text", None)
+    return text
 
 
 def _cmd_speak(args: argparse.Namespace) -> int:

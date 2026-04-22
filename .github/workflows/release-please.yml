@@ -1,0 +1,75 @@
+name: release-please
+
+# release-please watches conventional-commits on main, opens a "release PR"
+# that bumps the version + updates CHANGELOG.md. When that PR is merged,
+# release-please tags the commit and this workflow publishes to PyPI via
+# Trusted Publishing (OIDC — no API token needed on our side).
+#
+# One-time setup (owner-only):
+#   - GitHub Environment: `pypi` — optional approval gate before publish.
+#   - PyPI Trusted Publisher at pypi.org/manage/account/publishing/
+#     * project: stackvox
+#     * owner: StackOneHQ
+#     * repo: stackvox
+#     * workflow: release-please.yml
+#     * environment: pypi
+#
+# Recommended (not required):
+#   - Secret: REPO_GH_PAT — a fine-grained PAT with Contents + Pull requests
+#     write on this repo. Without it, release-please still opens PRs and
+#     publishes on merge, but the release PR won't auto-trigger CI (the
+#     default GITHUB_TOKEN can't cascade workflows onto its own PRs). If
+#     not set we fall back to GITHUB_TOKEN — close/reopen the release PR
+#     to kick CI off manually when you want verification.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: open / merge release PR
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@c2a5a2bd6a758a0937f1ddb1e8950609867ed15c # v4
+        id: release
+        with:
+          # PAT lets release-please PRs trigger CI; fall back to the default
+          # token so the workflow still functions before the PAT is provisioned.
+          token: ${{ secrets.REPO_GH_PAT || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: publish to PyPI
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/stackvox/
+    permissions:
+      contents: read
+      id-token: write # required for PyPI Trusted Publishing
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
