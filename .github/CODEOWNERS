@@ -1,0 +1,5 @@
+# CODEOWNERS — automatically requests review from the listed owners on
+# every PR that touches matching paths. The last matching pattern wins.
+# Syntax reference: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+
+*  @stubehan
