@@ -25,6 +25,12 @@ name: release-please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.2.0). Leave blank for normal release-please flow."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -37,6 +43,8 @@ concurrency:
 jobs:
   release-please:
     name: open / merge release PR
+    # Skip on manual dispatch — that path goes straight to publish.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.release.outputs.release_created }}
@@ -54,7 +62,14 @@ jobs:
   publish:
     name: publish to PyPI
     needs: release-please
-    if: needs.release-please.outputs.released == 'true'
+    # Runs when release-please merged its PR (released == 'true') OR when
+    # someone manually dispatched the workflow with a tag (bootstrap case
+    # for the first release before the release-please loop is primed).
+    if: |
+      always() && (
+        needs.release-please.outputs.released == 'true' ||
+        (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+      )
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -65,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.release-please.outputs.tag }}
+          ref: ${{ inputs.tag || needs.release-please.outputs.tag }}
       - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.12"
