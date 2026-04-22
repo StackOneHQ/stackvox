@@ -9,7 +9,11 @@ git clone https://github.com/StackOneHQ/stackvox.git
 cd stackvox
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
+pre-commit install --install-hooks
+pre-commit install --hook-type commit-msg
 ```
+
+The two `pre-commit install` calls wire up (a) ruff lint/format on staged files and (b) commit-message validation via commitizen. CI runs the same checks — installing them locally just catches problems before you push.
 
 System dependencies (for the audio and phonemizer stack):
 
@@ -37,6 +41,7 @@ The tests mock out `Stackvox` so they don't download the 340 MB model — CI run
   - `refactor: extract paths module`
   - `test: cover socket protocol`
   - `chore: bump deps`
+- The `commit-msg` hook validates each message against this format — if you'd rather use an interactive prompt, run `cz commit` instead of `git commit` (commitizen ships in the dev extras).
 - Prefer small, focused commits over large omnibus ones.
 
 ## Pull request checklist

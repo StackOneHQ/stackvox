@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stackvox"
-version = "0.1.0"
+version = "0.2.0"
 description = "Offline TTS library using Kokoro-82M"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,6 +31,8 @@ dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",
     "ruff>=0.5",
+    "pre-commit>=3.7",
+    "commitizen>=3.27",
 ]
 
 [project.urls]
@@ -71,3 +73,10 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+# Read version from [project] so pyproject.toml remains the single source of truth.
+version_provider = "pep621"
+tag_format = "v$version"
+update_changelog_on_bump = true

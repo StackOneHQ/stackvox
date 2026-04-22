@@ -44,3 +44,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libportaudio2 espeak-ng
       - run: pip install -e ".[dev]"
       - run: pytest
+
+  commits:
+    name: commit message lint
+    # Only meaningful on PRs (compare base..HEAD). Skip on push-to-main.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install commitizen
+      - name: validate commit messages against conventional-commits
+        run: cz check --rev-range ${{ github.event.pull_request.base.sha }}..HEAD
