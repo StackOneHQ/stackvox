@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- `CODE_OF_CONDUCT.md` adopting Contributor Covenant 2.1.
+- GitHub issue templates (bug report, feature request) and a PR template.
+- README badges for CI status, Python version, and license.
+- `stackvox/py.typed` marker so downstream type checkers pick up the inline type hints.
+- `.github/dependabot.yml` — weekly pip and GitHub Actions updates.
+
 ## [0.2.0] - 2026-04-22
 
 First open-source release. Adds packaging/licensing hygiene, a test suite, CI, and a quality-of-life fix for audio device switches.

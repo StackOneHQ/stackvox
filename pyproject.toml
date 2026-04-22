@@ -49,6 +49,10 @@ script-files = ["bin/stackvox-say"]
 [tool.setuptools.packages.find]
 include = ["stackvox*"]
 
+[tool.setuptools.package-data]
+# Ship the PEP 561 marker so downstream type checkers trust our inline hints.
+stackvox = ["py.typed"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py310"

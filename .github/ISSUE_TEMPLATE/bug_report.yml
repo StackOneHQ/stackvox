@@ -1,0 +1,64 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in the sections below — the more specific, the faster we can reproduce and fix.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, plus the expected behavior.
+      placeholder: When I run `stackvox say "..."`, the daemon returns "busy" even though the queue is empty.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal command sequence a maintainer can paste verbatim.
+      placeholder: |
+        1. `stackvox serve &`
+        2. `stackvox say "hello"`
+        3. Observe `busy` in stderr
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: stackvox version
+      description: Output of `stackvox --version` or `pip show stackvox | grep Version`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: stderr from `stackvox serve`, if applicable. Redact anything sensitive.
+      render: shell
