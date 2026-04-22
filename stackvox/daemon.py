@@ -22,6 +22,8 @@ import socket
 import socketserver
 import threading
 
+import sounddevice as sd
+
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
 from stackvox.paths import pid_path, socket_path
 
@@ -34,6 +36,22 @@ WORKER_POLL_SECONDS = 0.5
 CLIENT_TIMEOUT_SECONDS = 1.0
 PING_TIMEOUT_SECONDS = 0.5
 RECV_BYTES = 1024
+
+
+def _refresh_audio_devices() -> None:
+    """Reset PortAudio so the next play picks up the current system default.
+
+    PortAudio caches the default output device at init time; without this the
+    daemon keeps playing to whatever was default when it started (e.g. the
+    built-in speakers after the user swapped to Bluetooth). Terminating and
+    re-initialising is the only portable way to refresh that cache. Costs
+    ~10-50ms per call, which is invisible next to synthesis time.
+    """
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception:
+        logger.exception("failed to refresh audio devices")
 
 
 class _DaemonState:
@@ -50,6 +68,7 @@ class _DaemonState:
                 req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
+            _refresh_audio_devices()
             try:
                 self.tts.speak(
                     req["text"],

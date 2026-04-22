@@ -11,21 +11,33 @@ import json
 import socket
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 
+@dataclass
+class ServerHarness:
+    sock: Path
+    state: Any  # daemon._DaemonState — kept as Any so tests can touch mock attrs
+    tts: MagicMock
+    refresh: MagicMock
+
+
 @pytest.fixture
 def server(mocker):
-    """Start an isolated daemon server on a temp socket, yield its address.
+    """Start an isolated daemon server on a temp socket.
 
     Uses `tempfile.mkdtemp(dir="/tmp")` rather than pytest's tmp_path because
     macOS caps AF_UNIX socket paths at ~104 bytes and pytest paths are deep.
     """
     from stackvox import daemon
 
-    mocker.patch.object(daemon, "Stackvox")
+    stackvox_mock = mocker.patch.object(daemon, "Stackvox")
+    refresh_mock = mocker.patch.object(daemon, "_refresh_audio_devices")
 
     tmp = Path(tempfile.mkdtemp(prefix="svx-", dir="/tmp"))
     sock = tmp / "t.sock"
@@ -35,7 +47,12 @@ def server(mocker):
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
-        yield sock, state
+        yield ServerHarness(
+            sock=sock,
+            state=state,
+            tts=stackvox_mock.return_value,
+            refresh=refresh_mock,
+        )
     finally:
         state.shutdown()
         srv.shutdown()
@@ -55,43 +72,54 @@ def _roundtrip(sock_path: Path, payload: str) -> str:
         s.close()
 
 
-def test_ping_returns_ok(server):
-    sock, _ = server
-    assert _roundtrip(sock, json.dumps({"command": "ping"}) + "\n") == "ok"
+def test_ping_returns_ok(server: ServerHarness):
+    assert _roundtrip(server.sock, json.dumps({"command": "ping"}) + "\n") == "ok"
 
 
-def test_plain_text_is_treated_as_text_field(server):
+def test_plain_text_is_treated_as_text_field(server: ServerHarness):
     """Non-JSON payloads are accepted and wrapped as `{"text": line}`."""
     import time
 
-    sock, state = server
-    assert _roundtrip(sock, "hello\n") == "ok"
+    assert _roundtrip(server.sock, "hello\n") == "ok"
     # The worker (mocked Stackvox) drains the queue immediately; poll until
     # the mock records the call rather than racing the queue.
     deadline = time.monotonic() + 1.0
-    while not state.tts.speak.call_args_list and time.monotonic() < deadline:
+    while not server.tts.speak.call_args_list and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert state.tts.speak.call_args.args[0] == "hello"
+    assert server.tts.speak.call_args.args[0] == "hello"
 
 
-def test_missing_text_yields_error(server):
-    sock, _ = server
-    reply = _roundtrip(sock, json.dumps({"voice": "af_sarah"}) + "\n")
+def test_missing_text_yields_error(server: ServerHarness):
+    reply = _roundtrip(server.sock, json.dumps({"voice": "af_sarah"}) + "\n")
     assert reply.startswith("err:")
 
 
-def test_full_queue_returns_busy(server, mocker):
+def test_full_queue_returns_busy(server: ServerHarness):
     from stackvox import daemon
 
-    sock, state = server
     # Block the worker so the queue can actually fill up.
-    state.queue.put_nowait({"text": "a"})
-    state.queue.put_nowait({"text": "b"})
-    assert state.queue.full() or state.queue.qsize() >= daemon.MAX_QUEUE
+    server.state.queue.put_nowait({"text": "a"})
+    server.state.queue.put_nowait({"text": "b"})
+    assert server.state.queue.full() or server.state.queue.qsize() >= daemon.MAX_QUEUE
 
-    reply = _roundtrip(sock, json.dumps({"text": "overflow"}) + "\n")
+    reply = _roundtrip(server.sock, json.dumps({"text": "overflow"}) + "\n")
     # At least one of the sentinel messages OR busy — queue may drain if worker picks up first.
     assert reply in {"ok", "busy"}
+
+
+def test_worker_refreshes_audio_devices_before_each_play(server: ServerHarness):
+    """PortAudio is reset before every play so device switches are picked up."""
+    import time
+
+    assert _roundtrip(server.sock, json.dumps({"text": "a"}) + "\n") == "ok"
+    assert _roundtrip(server.sock, json.dumps({"text": "b"}) + "\n") == "ok"
+
+    deadline = time.monotonic() + 1.0
+    while server.tts.speak.call_count < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert server.tts.speak.call_count == 2
+    assert server.refresh.call_count == 2
 
 
 def test_send_helper_when_daemon_not_running(tmp_path, monkeypatch):

@@ -128,6 +128,8 @@ Socket lives at `~/.cache/stackvox/daemon.sock` (override with `STACKVOX_SOCKET`
 
 Queue depth is 2 — rapid-fire requests beyond that get `busy` rather than piling up.
 
+Before each utterance the daemon resets PortAudio so it picks up the current system default output device. Swap from speakers to Bluetooth headphones mid-session and the next `say` follows you — no daemon restart needed. The refresh costs ~10–50ms per play, which is invisible next to synthesis time.
+
 ## Requirements
 
 - Python 3.10+
