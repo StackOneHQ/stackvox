@@ -148,6 +148,16 @@ Before each utterance the daemon resets PortAudio so it picks up the current sys
 - macOS or Linux
 - `nc` (BSD netcat — default on macOS, `netcat-openbsd` on Linux) for the bash helper
 
+## Security considerations
+
+stackvox doesn't open any network port. The daemon binds a unix socket under `~/.cache/stackvox/` (default file-mode `0600`, i.e. user-only per the OS defaults for files in `$HOME`). Any process running as the same local user can send text to the daemon — there's no per-message authentication on the socket itself. That's the trust boundary: stackvox assumes anything running as your UID is allowed to speak on your behalf.
+
+If you're exposing stackvox through a different surface (HTTP server, shared system service, container), authentication and rate-limiting are your responsibility at that layer.
+
+Model weights (`kokoro-v1.0.onnx`, ~340 MB) and voices are downloaded from the [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) GitHub release assets on first use and cached under `~/.cache/stackvox/`. If you operate in a restricted environment, pre-seed that directory offline.
+
+Security issues themselves should not be filed as public GitHub issues — see [`SECURITY.md`](./SECURITY.md) for the disclosure process.
+
 ## License & attributions
 
 stackvox itself is licensed under the **Apache License, Version 2.0** — see [`LICENSE`](./LICENSE). Third-party attributions are collected in [`NOTICE`](./NOTICE); the summary below is informational.
