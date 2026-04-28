@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -22,6 +24,40 @@ _MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/mode
 _VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
 
+def _download_with_progress(url: str, dest: Path) -> None:
+    """Stream a URL to a file, printing percentage updates to stderr.
+
+    The ~340 MB Kokoro model takes long enough on first run that a silent
+    download looks like a hang; this gives users feedback without pulling
+    in tqdm. Falls back to a single line when the server doesn't report
+    Content-Length.
+    """
+    last_pct = -1
+    label = dest.name
+
+    def hook(blocks: int, blocksize: int, totalsize: int) -> None:
+        nonlocal last_pct
+        if totalsize <= 0:
+            return
+        pct = min(100, int(blocks * blocksize * 100 / totalsize))
+        if pct != last_pct:
+            mb_total = totalsize / 1_000_000
+            print(
+                f"\r[stackvox] downloading {label} {pct:3d}% ({mb_total:.0f} MB)",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_pct = pct
+
+    urllib.request.urlretrieve(url, dest, reporthook=hook)
+    if last_pct >= 0 and sys.stderr.isatty():
+        # Finish the carriage-returned line so subsequent output starts on
+        # its own line. On non-TTY (e.g. CI logs) stderr is line-buffered
+        # and the \r writes already land on separate lines.
+        print("", file=sys.stderr, flush=True)
+
+
 def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     model_path = cache_dir / "kokoro-v1.0.onnx"
@@ -29,8 +65,7 @@ def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     for path, url in [(model_path, _MODEL_URL), (voices_path, _VOICES_URL)]:
         if path.exists():
             continue
-        logger.info("downloading %s...", path.name)
-        urllib.request.urlretrieve(url, path)
+        _download_with_progress(url, path)
     return model_path, voices_path
 
 
@@ -134,12 +169,22 @@ class Stackvox:
 
 
 _default: Stackvox | None = None
+_default_lock = threading.Lock()
 
 
 def _get_default() -> Stackvox:
+    """Lazily build a module-level engine, safe under concurrent first calls.
+
+    Without the lock, two threads racing to call speak() / synthesize() at
+    process start could each instantiate Stackvox — meaning two 340 MB model
+    loads. Double-checked locking keeps the fast path lock-free once
+    initialised.
+    """
     global _default
     if _default is None:
-        _default = Stackvox()
+        with _default_lock:
+            if _default is None:
+                _default = Stackvox()
     return _default
 
 

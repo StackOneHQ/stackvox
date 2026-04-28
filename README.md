@@ -41,6 +41,17 @@ stackvox speak "Hi" --voice bf_emma # same, explicit subcommand
 stackvox speak "save" --out a.wav   # write wav instead of playing
 stackvox welcome                    # multilingual welcome (6 languages)
 stackvox voices                     # list all voice ids
+echo "from a pipe" | stackvox       # piped stdin works for speak/say
+stackvox speak --file message.txt   # read a whole file
+```
+
+Bash completion:
+
+```bash
+eval "$(stackvox completion bash)"  # current shell
+# or persist:
+stackvox completion bash > ~/.stackvox-completion.bash
+echo 'source ~/.stackvox-completion.bash' >> ~/.bashrc
 ```
 
 Daemon mode (keeps the model resident so each subsequent call is instant):
