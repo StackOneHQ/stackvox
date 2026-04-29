@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stackvox"
-version = "0.2.1"
+version = "0.3.0"
 description = "Offline TTS library using Kokoro-82M"
 readme = "README.md"
 requires-python = ">=3.10"
