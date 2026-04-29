@@ -107,18 +107,42 @@ def test_full_queue_returns_busy(server: ServerHarness):
     assert reply in {"ok", "busy"}
 
 
-def test_worker_refreshes_audio_devices_before_each_play(server: ServerHarness):
-    """PortAudio is reset before every play so device switches are picked up."""
+def test_worker_refreshes_audio_only_when_dirty(server: ServerHarness):
+    """PortAudio is refreshed once per dirty cycle, not before every play.
+
+    Initial dirty state at startup → first playback refreshes. A second
+    playback with no device change → no extra refresh. Re-marking dirty
+    (simulating a default-output-device change) → next playback refreshes
+    again.
+    """
     import time
 
+    from stackvox import daemon
+
+    # Ensure a known starting state regardless of prior-test ordering: dirty
+    # so the first playback in this test refreshes once.
+    daemon._audio_dirty.set()
+
+    def wait_for_speak_count(target: int) -> None:
+        deadline = time.monotonic() + 1.0
+        while server.tts.speak.call_count < target and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    # First playback consumes the dirty flag.
     assert _roundtrip(server.sock, json.dumps({"text": "a"}) + "\n") == "ok"
+    wait_for_speak_count(1)
+    assert server.refresh.call_count == 1
+
+    # Second playback with no device change → no additional refresh.
     assert _roundtrip(server.sock, json.dumps({"text": "b"}) + "\n") == "ok"
+    wait_for_speak_count(2)
+    assert server.refresh.call_count == 1
 
-    deadline = time.monotonic() + 1.0
-    while server.tts.speak.call_count < 2 and time.monotonic() < deadline:
-        time.sleep(0.01)
+    # Simulate a real device change.
+    daemon._audio_dirty.set()
 
-    assert server.tts.speak.call_count == 2
+    assert _roundtrip(server.sock, json.dumps({"text": "c"}) + "\n") == "ok"
+    wait_for_speak_count(3)
     assert server.refresh.call_count == 2
 
 

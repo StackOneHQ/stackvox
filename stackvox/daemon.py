@@ -13,6 +13,8 @@ Replies: "ok", "busy", "err: <msg>".
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import json
 import logging
 import os
@@ -20,6 +22,7 @@ import queue
 import signal
 import socket
 import socketserver
+import sys
 import threading
 
 import sounddevice as sd
@@ -38,6 +41,18 @@ PING_TIMEOUT_SECONDS = 0.5
 RECV_BYTES = 1024
 
 
+# Set when PortAudio's cached default-output device is suspected stale and
+# needs Pa_Terminate / Pa_Initialize before the next playback. Initial state
+# is True so the first playback always refreshes; the macOS device watcher
+# re-sets it on real device changes; the worker also re-sets on playback
+# failure as a belt-and-suspenders retry path.
+_audio_dirty = threading.Event()
+_audio_dirty.set()
+
+# Holds CoreAudio callback references so they aren't garbage collected.
+_ca_refs: list = []
+
+
 def _refresh_audio_devices() -> None:
     """Reset PortAudio so the next play picks up the current system default.
 
@@ -45,13 +60,95 @@ def _refresh_audio_devices() -> None:
     daemon keeps playing to whatever was default when it started (e.g. the
     built-in speakers after the user swapped to Bluetooth). Terminating and
     re-initialising is the only portable way to refresh that cache. Costs
-    ~10-50ms per call, which is invisible next to synthesis time.
+    ~10-50ms per call.
     """
     try:
         sd._terminate()
         sd._initialize()
     except Exception:
         logger.exception("failed to refresh audio devices")
+
+
+def _start_device_watcher() -> None:
+    """macOS only: mark `_audio_dirty` when the default output device changes.
+
+    Avoids reinitialising PortAudio on every playback (the simpler approach,
+    which adds 10-50ms of latency before each speech). macOS notifies the
+    property listener on more than just real device changes — playback start,
+    volume changes, and other side effects all fire it — so we compare the
+    current default-output device ID against the last seen one and only mark
+    dirty on actual changes.
+
+    No-ops on non-macOS; the dirty flag stays at its initial state (set), so
+    the first playback refreshes once and subsequent playbacks reuse the
+    PortAudio context. Device changes on those platforms are handled by the
+    worker's failure-retry path.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        ca = ctypes.CDLL(ctypes.util.find_library("CoreAudio") or "")
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation") or "")
+    except Exception:
+        logger.debug("CoreAudio unavailable; device watcher disabled")
+        return
+
+    class _PropAddr(ctypes.Structure):
+        _fields_ = [
+            ("mSelector", ctypes.c_uint32),
+            ("mScope", ctypes.c_uint32),
+            ("mElement", ctypes.c_uint32),
+        ]
+
+    _ListenerProc = ctypes.CFUNCTYPE(
+        ctypes.c_int32,
+        ctypes.c_uint32,  # inObjectID
+        ctypes.c_uint32,  # inNumberAddresses
+        ctypes.POINTER(_PropAddr),
+        ctypes.c_void_p,
+    )
+
+    prop = _PropAddr(
+        0x644F7574,  # kAudioHardwarePropertyDefaultOutputDevice  'dOut'
+        0x676C6F62,  # kAudioObjectPropertyScopeGlobal             'glob'
+        0,  # kAudioObjectPropertyElementMain
+    )
+
+    def _read_default_device() -> int:
+        device = ctypes.c_uint32(0)
+        size = ctypes.c_uint32(ctypes.sizeof(device))
+        status = ca.AudioObjectGetPropertyData(
+            1,  # kAudioObjectSystemObject
+            ctypes.byref(prop),
+            0,
+            None,
+            ctypes.byref(size),
+            ctypes.byref(device),
+        )
+        return device.value if status == 0 else 0
+
+    last_device = [_read_default_device()]
+
+    def _on_device_change(obj_id: int, n: int, addrs, data) -> int:
+        try:
+            current = _read_default_device()
+            if current and current != last_device[0]:
+                last_device[0] = current
+                _audio_dirty.set()
+        except Exception:
+            logger.debug("device-change callback error", exc_info=True)
+        return 0
+
+    cb = _ListenerProc(_on_device_change)
+    _ca_refs.append(cb)  # prevent GC
+    ca.AudioObjectAddPropertyListener(1, ctypes.byref(prop), cb, None)
+
+    threading.Thread(
+        target=cf.CFRunLoopRun,
+        daemon=True,
+        name="audio-device-watcher",
+    ).start()
+    logger.debug("audio device watcher started")
 
 
 class _DaemonState:
@@ -61,6 +158,7 @@ class _DaemonState:
         self.stop_event = threading.Event()
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
+        _start_device_watcher()
 
     def _worker(self) -> None:
         while not self.stop_event.is_set():
@@ -68,7 +166,9 @@ class _DaemonState:
                 req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
-            _refresh_audio_devices()
+            if _audio_dirty.is_set():
+                _refresh_audio_devices()
+                _audio_dirty.clear()
             try:
                 self.tts.speak(
                     req["text"],
@@ -78,6 +178,9 @@ class _DaemonState:
                 )
             except Exception:
                 logger.exception("playback error")
+                # Failed playback might be a stale audio context; mark dirty
+                # so the next request refreshes before trying again.
+                _audio_dirty.set()
 
     def submit(self, req: dict) -> bool:
         try:
