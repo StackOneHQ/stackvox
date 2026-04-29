@@ -24,6 +24,7 @@ import socket
 import socketserver
 import sys
 import threading
+from typing import Any
 
 import sounddevice as sd
 
@@ -50,7 +51,7 @@ _audio_dirty = threading.Event()
 _audio_dirty.set()
 
 # Holds CoreAudio callback references so they aren't garbage collected.
-_ca_refs: list = []
+_ca_refs: list[Any] = []
 
 
 def _refresh_audio_devices() -> None:
@@ -141,7 +142,13 @@ def _start_device_watcher() -> None:
 
     cb = _ListenerProc(_on_device_change)
     _ca_refs.append(cb)  # prevent GC
-    ca.AudioObjectAddPropertyListener(1, ctypes.byref(prop), cb, None)
+    status = ca.AudioObjectAddPropertyListener(1, ctypes.byref(prop), cb, None)
+    if status != 0:
+        # If registration silently fails the watcher would never fire and
+        # device switches would only recover via the worker's failure-retry
+        # path. Surface it so the failure mode is observable.
+        logger.warning("AudioObjectAddPropertyListener failed (status=%d); device watcher inactive", status)
+        return
 
     threading.Thread(
         target=cf.CFRunLoopRun,
