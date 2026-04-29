@@ -21,7 +21,58 @@ def _configure_logging() -> None:
     )
 
 
-SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices", "welcome"}
+SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices", "welcome", "completion"}
+
+_BASH_COMPLETION = r"""# stackvox bash completion. Install with one of:
+#   eval "$(stackvox completion bash)"          # current shell
+#   stackvox completion bash > ~/.stackvox-completion.bash && \
+#     echo 'source ~/.stackvox-completion.bash' >> ~/.bashrc
+_stackvox_completion() {
+    local cur prev subcommand
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    subcommand="${COMP_WORDS[1]:-}"
+
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "speak say serve stop status voices welcome completion" -- "$cur") )
+        return 0
+    fi
+
+    case "$prev" in
+        --file|--out)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        --speed)
+            COMPREPLY=( $(compgen -W "0.8 0.9 1.0 1.1 1.2 1.5" -- "$cur") )
+            return 0
+            ;;
+        --lang)
+            COMPREPLY=( $(compgen -W "en-us en-gb fr-fr it hi pt-br es ja zh" -- "$cur") )
+            return 0
+            ;;
+    esac
+
+    case "$subcommand" in
+        speak)
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --out --help" -- "$cur") )
+            ;;
+        say)
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --fallback-say --help" -- "$cur") )
+            ;;
+        serve)
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --help" -- "$cur") )
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash" -- "$cur") )
+            ;;
+        *)
+            COMPREPLY=( $(compgen -W "--help" -- "$cur") )
+            ;;
+    esac
+}
+complete -F _stackvox_completion stackvox
+"""
 
 WELCOME_LINES = [
     ("bf_emma", "en-gb", "Welcome to stackvox."),
@@ -59,6 +110,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("voices", help="List available voices")
     sub.add_parser("welcome", help="Play a multilingual welcome message")
 
+    p_completion = sub.add_parser("completion", help="Print a shell completion script")
+    p_completion.add_argument("shell", choices=["bash"], help="Shell to generate completion for")
+
     return parser
 
 
@@ -69,11 +123,20 @@ def _add_voice_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _read_text(args: argparse.Namespace) -> str | None:
+    """Resolve the text to speak from --file, the positional, or piped stdin.
+
+    Precedence: --file > positional text > stdin (when piped, not a TTY).
+    """
     file: Path | None = getattr(args, "file", None)
     if file is not None:
         return file.read_text(encoding="utf-8")
     text: str | None = getattr(args, "text", None)
-    return text
+    if text is not None:
+        return text
+    if not sys.stdin.isatty():
+        piped = sys.stdin.read()
+        return piped if piped.strip() else None
+    return None
 
 
 def _cmd_speak(args: argparse.Namespace) -> int:
@@ -149,12 +212,24 @@ def _cmd_welcome(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_completion(args: argparse.Namespace) -> int:
+    if args.shell == "bash":
+        print(_BASH_COMPLETION)
+        return 0
+    # argparse `choices=` should prevent reaching here; defensive only.
+    print(f"unsupported shell: {args.shell}", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     _configure_logging()
     argv = sys.argv[1:]
     # Back-compat: `stackvox "text"` with no subcommand → speak.
+    # Same shortcut for piped stdin: `echo hi | stackvox` → speak.
     if argv and argv[0] not in SUBCOMMANDS and not argv[0].startswith("-"):
         argv = ["speak", *argv]
+    elif not argv and not sys.stdin.isatty():
+        argv = ["speak"]
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -171,6 +246,7 @@ def main() -> int:
         "status": _cmd_status,
         "voices": _cmd_voices,
         "welcome": _cmd_welcome,
+        "completion": _cmd_completion,
     }
     return handlers[args.cmd](args)
 
