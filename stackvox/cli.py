@@ -9,8 +9,8 @@ from pathlib import Path
 
 import soundfile as sf
 
-from stackvox import daemon
-from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
+from stackvox import config, daemon
+from stackvox.engine import Stackvox
 
 
 def _configure_logging() -> None:
@@ -103,18 +103,20 @@ WELCOME_LINES = [
 ]
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentParser:
+    if defaults is None:
+        defaults = config.Defaults()
     parser = argparse.ArgumentParser(prog="stackvox", description="Kokoro-82M TTS")
     sub = parser.add_subparsers(dest="cmd")
 
     p_speak = sub.add_parser("speak", help="Synthesize and play in-process (loads model each run)")
-    _add_voice_args(p_speak)
+    _add_voice_args(p_speak, defaults)
     p_speak.add_argument("text", nargs="?")
     p_speak.add_argument("--file", type=Path)
     p_speak.add_argument("--out", type=Path, help="Write wav instead of playing")
 
     p_say = sub.add_parser("say", help="Send text to daemon (fast; fails if daemon not running)")
-    _add_voice_args(p_say)
+    _add_voice_args(p_say, defaults)
     p_say.add_argument("text", nargs="?")
     p_say.add_argument("--file", type=Path)
     p_say.add_argument(
@@ -122,7 +124,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_serve = sub.add_parser("serve", help="Run the daemon in the foreground")
-    _add_voice_args(p_serve)
+    _add_voice_args(p_serve, defaults)
 
     sub.add_parser("stop", help="Stop the running daemon")
     sub.add_parser("status", help="Print daemon status")
@@ -146,10 +148,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_voice_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--voice", default=DEFAULT_VOICE)
-    parser.add_argument("--speed", type=float, default=DEFAULT_SPEED)
-    parser.add_argument("--lang", default=DEFAULT_LANG)
+def _add_voice_args(parser: argparse.ArgumentParser, defaults: config.Defaults) -> None:
+    parser.add_argument("--voice", default=defaults.voice)
+    parser.add_argument("--speed", type=float, default=defaults.speed)
+    parser.add_argument("--lang", default=defaults.lang)
 
 
 def _read_text(args: argparse.Namespace) -> str | None:
@@ -297,7 +299,7 @@ def main() -> int:
     elif not argv and not sys.stdin.isatty():
         argv = ["speak"]
 
-    parser = _build_parser()
+    parser = _build_parser(config.load_defaults())
     args = parser.parse_args(argv)
 
     if not args.cmd:
