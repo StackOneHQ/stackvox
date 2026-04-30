@@ -65,7 +65,22 @@ stackvox completion bash > ~/.stackvox-completion.bash
 echo 'source ~/.stackvox-completion.bash' >> ~/.bashrc
 ```
 
-Daemon mode (keeps the model resident so each subsequent call is instant):
+## Configuration
+
+stackvox reads per-user defaults from a TOML file, so you don't need to repeat `--voice bf_emma --speed 1.1` on every invocation. Set values in `~/.config/stackvox/config.toml` (or `$XDG_CONFIG_HOME/stackvox/config.toml`, or wherever `STACKVOX_CONFIG` points):
+
+```toml
+[defaults]
+voice = "bf_emma"
+speed = 1.1
+lang = "en-gb"
+```
+
+CLI flags always win over config values, and config values always win over the built-in defaults. A missing file is fine — built-ins apply. A malformed file logs a warning and is ignored.
+
+## Daemon mode
+
+Keeps the model resident so each subsequent call is instant:
 
 ```bash
 stackvox serve         # foreground; run with `nohup stackvox serve &` to background

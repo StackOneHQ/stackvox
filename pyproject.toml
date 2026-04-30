@@ -24,6 +24,7 @@ dependencies = [
     "soundfile>=0.12.1",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
+    "tomli>=2.0;python_version<'3.11'",
 ]
 
 [project.optional-dependencies]
@@ -109,8 +110,9 @@ no_implicit_optional = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-# Third-party deps without inline type stubs.
-module = ["kokoro_onnx", "sounddevice", "soundfile"]
+# Third-party deps without inline type stubs (or, for `tomli`, a 3.10-only
+# fallback that's not installed on the typechecker's Python).
+module = ["kokoro_onnx", "sounddevice", "soundfile", "tomli"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
