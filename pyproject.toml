@@ -106,6 +106,7 @@ warn_redundant_casts = true
 warn_return_any = true
 check_untyped_defs = true
 no_implicit_optional = true
+disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
 # Third-party deps without inline type stubs.
@@ -113,8 +114,9 @@ module = ["kokoro_onnx", "sounddevice", "soundfile"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# Tests use pytest-mock's mocker.patch which returns Any-heavy values; don't
-# require full strictness there.
+# Tests rely on pytest-mock's `mocker` (Any-heavy) and pytest fixtures with
+# implicit Any-typed kwargs. Strict untyped-def bans buy little here, so
+# tests stay on the looser config.
 module = "tests.*"
 disallow_untyped_defs = false
 
