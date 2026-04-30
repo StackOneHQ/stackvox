@@ -251,3 +251,42 @@ class TestCmdCompletion:
         rc = cli._cmd_completion(_ns(shell="fish"))
         assert rc == 1
         assert "unsupported shell" in capsys.readouterr().err
+
+
+class TestCmdInstallHelper:
+    def test_copies_helper_to_prefix_with_exec_bit(self, tmp_path):
+        prefix = tmp_path / "bin"
+        rc = cli._cmd_install_helper(_ns(prefix=prefix))
+
+        assert rc == 0
+        dest = prefix / "stackvox-say"
+        assert dest.exists()
+        # First line should be the bash shebang from the bundled script.
+        assert dest.read_text(encoding="utf-8").startswith("#!/bin/bash")
+        # Owner-execute bit is set.
+        import stat as st
+
+        assert dest.stat().st_mode & st.S_IXUSR
+
+    def test_creates_prefix_dir_if_missing(self, tmp_path):
+        prefix = tmp_path / "deep" / "nested" / "bin"
+        assert not prefix.exists()
+        rc = cli._cmd_install_helper(_ns(prefix=prefix))
+        assert rc == 0
+        assert (prefix / "stackvox-say").is_file()
+
+    def test_warns_when_prefix_not_on_path(self, tmp_path, mocker, capsys):
+        prefix = tmp_path / "out-of-path"
+        # Force PATH to a value that definitely doesn't include `prefix`.
+        mocker.patch.dict("os.environ", {"PATH": "/usr/bin:/bin"}, clear=False)
+        cli._cmd_install_helper(_ns(prefix=prefix))
+        err = capsys.readouterr().err
+        assert "not on your PATH" in err
+
+    def test_no_warning_when_prefix_on_path(self, tmp_path, mocker, capsys):
+        prefix = tmp_path / "on-path"
+        prefix.mkdir(parents=True)
+        # Put `prefix` on PATH so the warning shouldn't fire.
+        mocker.patch.dict("os.environ", {"PATH": f"{prefix}:/usr/bin"}, clear=False)
+        cli._cmd_install_helper(_ns(prefix=prefix))
+        assert "not on your PATH" not in capsys.readouterr().err

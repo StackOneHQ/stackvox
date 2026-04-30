@@ -45,15 +45,16 @@ Issues = "https://github.com/StackOneHQ/stackvox/issues"
 [project.scripts]
 stackvox = "stackvox.cli:main"
 
-[tool.setuptools]
-script-files = ["bin/stackvox-say"]
-
 [tool.setuptools.packages.find]
 include = ["stackvox*"]
 
 [tool.setuptools.package-data]
-# Ship the PEP 561 marker so downstream type checkers trust our inline hints.
-stackvox = ["py.typed"]
+# Ship the PEP 561 marker so downstream type checkers trust our inline hints,
+# and the bash helper as package data — extracted onto PATH by
+# `stackvox install-helper`. (We deliberately don't use [tool.setuptools]
+# script-files = [...]: it's discouraged, has no PEP 621 equivalent, and
+# doesn't round-trip through hatchling/uv if we ever migrate build backends.)
+stackvox = ["py.typed", "data/stackvox-say"]
 
 [tool.ruff]
 line-length = 110

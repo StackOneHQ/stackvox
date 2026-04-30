@@ -21,7 +21,19 @@ def _configure_logging() -> None:
     )
 
 
-SUBCOMMANDS = {"serve", "stop", "status", "say", "speak", "voices", "welcome", "completion"}
+SUBCOMMANDS = {
+    "serve",
+    "stop",
+    "status",
+    "say",
+    "speak",
+    "voices",
+    "welcome",
+    "completion",
+    "install-helper",
+}
+
+DEFAULT_HELPER_PREFIX = Path.home() / ".local" / "bin"
 
 _BASH_COMPLETION = r"""# stackvox bash completion. Install with one of:
 #   eval "$(stackvox completion bash)"          # current shell
@@ -34,13 +46,17 @@ _stackvox_completion() {
     subcommand="${COMP_WORDS[1]:-}"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "speak say serve stop status voices welcome completion" -- "$cur") )
+        COMPREPLY=( $(compgen -W "speak say serve stop status voices welcome completion install-helper" -- "$cur") )
         return 0
     fi
 
     case "$prev" in
         --file|--out)
             COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+        --prefix)
+            COMPREPLY=( $(compgen -d -- "$cur") )
             return 0
             ;;
         --speed)
@@ -65,6 +81,9 @@ _stackvox_completion() {
             ;;
         completion)
             COMPREPLY=( $(compgen -W "bash" -- "$cur") )
+            ;;
+        install-helper)
+            COMPREPLY=( $(compgen -W "--prefix --help" -- "$cur") )
             ;;
         *)
             COMPREPLY=( $(compgen -W "--help" -- "$cur") )
@@ -112,6 +131,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_completion = sub.add_parser("completion", help="Print a shell completion script")
     p_completion.add_argument("shell", choices=["bash"], help="Shell to generate completion for")
+
+    p_install_helper = sub.add_parser(
+        "install-helper",
+        help="Copy the stackvox-say bash helper onto PATH (default: ~/.local/bin)",
+    )
+    p_install_helper.add_argument(
+        "--prefix",
+        type=Path,
+        default=DEFAULT_HELPER_PREFIX,
+        help=f"Install directory (default: {DEFAULT_HELPER_PREFIX})",
+    )
 
     return parser
 
@@ -221,6 +251,42 @@ def _cmd_completion(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_install_helper(args: argparse.Namespace) -> int:
+    """Copy the bundled `stackvox-say` bash helper onto PATH.
+
+    The helper is shipped as package data (`stackvox/data/stackvox-say`) rather
+    than installed automatically by setuptools — `script-files` is discouraged
+    and doesn't round-trip through modern build backends. This subcommand is
+    the explicit one-time install step.
+    """
+    import os
+    import shutil
+    import stat
+    from importlib.resources import as_file, files
+
+    prefix = Path(args.prefix).expanduser()
+    prefix.mkdir(parents=True, exist_ok=True)
+    dest = prefix / "stackvox-say"
+
+    src = files("stackvox").joinpath("data/stackvox-say")
+    with as_file(src) as src_path:
+        shutil.copy2(src_path, dest)
+
+    # Ensure executable bits regardless of how the wheel preserved them.
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    print(f"Installed stackvox-say to {dest}", file=sys.stderr)
+
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    if str(prefix) not in path_dirs:
+        print(
+            f"Note: {prefix} is not on your PATH. Either add it to PATH or invoke "
+            f"the helper via its full path: {dest}",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def main() -> int:
     _configure_logging()
     argv = sys.argv[1:]
@@ -247,6 +313,7 @@ def main() -> int:
         "voices": _cmd_voices,
         "welcome": _cmd_welcome,
         "completion": _cmd_completion,
+        "install-helper": _cmd_install_helper,
     }
     return handlers[args.cmd](args)
 
