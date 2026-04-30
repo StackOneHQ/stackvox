@@ -1,0 +1,122 @@
+name: check-kokoro-model
+
+# Watches thewh1teagle/kokoro-onnx for new model-file releases. When the
+# upstream release tag pinned in stackvox/engine.py (`_MODEL_URL` /
+# `_VOICES_URL`) is no longer the latest `model-files-v*`, opens a single
+# labelled issue. Idempotent — won't open a duplicate while one is open.
+#
+# Deliberately does not open a PR. Model upgrades can change the ONNX
+# schema, sample rate, or voice roster, so a maintainer needs to evaluate
+# manually before bumping the URL constants.
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # 09:00 UTC every Monday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: check-kokoro-model
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: extract pinned model release tag
+        id: pinned
+        run: |
+          tag=$(grep -oE 'model-files-v[0-9.]+' stackvox/engine.py | sort -u)
+          count=$(echo "$tag" | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one model-files-v* tag in engine.py, found:"
+            echo "$tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "pinned tag: $tag"
+
+      - name: get latest upstream model release
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Filter to model-files-v* tags so the kokoro_onnx Python package
+          # releases (which use plain v* tags) don't confuse us.
+          tag=$(gh api repos/thewh1teagle/kokoro-onnx/releases \
+            --jq '[.[] | select(.tag_name | startswith("model-files-v"))][0].tag_name')
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "::warning::could not resolve latest upstream model-files-v* tag; skipping"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "latest upstream tag: $tag"
+
+      - name: ensure model-upgrade label exists
+        if: steps.latest.outputs.tag != '' && steps.latest.outputs.tag != steps.pinned.outputs.tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create model-upgrade \
+            --description "Upstream Kokoro model release available" \
+            --color B60205 \
+            --force
+
+      - name: open issue if upstream is ahead
+        if: steps.latest.outputs.tag != '' && steps.latest.outputs.tag != steps.pinned.outputs.tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.pinned.outputs.tag }}
+          LATEST: ${{ steps.latest.outputs.tag }}
+        run: |
+          # Don't open a duplicate while one is already open.
+          existing=$(gh issue list --label model-upgrade --state open --json number)
+          if [ "$existing" != "[]" ]; then
+            echo "an open model-upgrade issue already exists; not creating another"
+            echo "$existing"
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          A newer Kokoro model release is available upstream.
+
+          - **Pinned in stackvox**: \`$PINNED\`
+          - **Latest upstream**:    \`$LATEST\`
+          - **Upstream release**:   https://github.com/thewh1teagle/kokoro-onnx/releases/tag/$LATEST
+
+          ## Why this isn't auto-bumped
+
+          Model upgrades can change the ONNX schema, the output sample rate, or the voice roster.
+          A blind URL bump could ship broken audio or break downstream code that hardcodes
+          voice names. So this issue is the prompt — a maintainer evaluates and bumps manually.
+
+          ## Checklist for the upgrade
+
+          - [ ] Update \`_MODEL_URL\` and \`_VOICES_URL\` in \`stackvox/engine.py\` to point at \`$LATEST\`.
+          - [ ] Confirm the on-disk filenames embedded in \`_ensure_models\` (e.g. \`kokoro-vX.Y.onnx\`, \`voices-vX.Y.bin\`) still match the upstream release assets — the file names track the model version, not the release tag.
+          - [ ] Sanity-check the voice roster — \`stackvox voices\` against the new voice pack. If voices were removed or renamed, update the README voice table and the bash completion list in \`cli.py\`.
+          - [ ] Confirm the sample rate hasn't shifted (still 24 kHz for Kokoro-82M today).
+          - [ ] Run a manual smoke test: \`stackvox welcome\` and a few specific voices.
+          - [ ] If anything breaks, file the upstream change as a \`fix:\` commit so release-please surfaces it in the next release.
+
+          ---
+          Opened automatically by [\`.github/workflows/check-kokoro-model.yml\`](../blob/main/.github/workflows/check-kokoro-model.yml). Close manually once the upgrade is merged or explicitly declined.
+          EOF
+          )
+
+          gh issue create \
+            --title "Kokoro model upgrade available: $PINNED → $LATEST" \
+            --label model-upgrade \
+            --body "$body"
+
+      - name: report up-to-date
+        if: steps.latest.outputs.tag != '' && steps.latest.outputs.tag == steps.pinned.outputs.tag
+        run: echo "stackvox is pinned to the latest upstream model release ($PINNED)."
+        env:
+          PINNED: ${{ steps.pinned.outputs.tag }}
