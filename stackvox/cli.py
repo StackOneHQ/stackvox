@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 import soundfile as sf
 
-from stackvox import config, daemon
+from stackvox import config, daemon, updates
 from stackvox.engine import Stackvox
 
 
@@ -226,9 +227,18 @@ def _cmd_stop(_: argparse.Namespace) -> int:
 def _cmd_status(_: argparse.Namespace) -> int:
     if daemon.is_running():
         print(f"running (pid {daemon.PID_PATH.read_text().strip()}) on {daemon.SOCKET_PATH}")
-        return 0
-    print("stopped")
-    return 1
+        rc = 0
+    else:
+        print("stopped")
+        rc = 1
+    # Status is the canonical "is everything OK?" query — surface update info
+    # here regardless of running/stopped. Synchronous fetch with 2s timeout.
+    info = updates.check_for_update()
+    if info is not None:
+        print(f"version: {info.current} ({updates.format_notice(info)})")
+    else:
+        print(f"version: {updates._current_version()}")
+    return rc
 
 
 def _cmd_voices(args: argparse.Namespace) -> int:
@@ -289,6 +299,21 @@ def _cmd_install_helper(args: argparse.Namespace) -> int:
     return 0
 
 
+def _maybe_print_update_notice() -> None:
+    """Opt-in stderr notice for the script-friendly default-off case.
+
+    Off by default (most stackvox invocations are non-interactive — hooks,
+    CI, scripts — and pollution there is worse than the missed notice).
+    Set `STACKVOX_UPDATE_NOTICE=1` to turn it on. Reads cache only; never
+    fetches from PyPI on this path.
+    """
+    if not os.environ.get("STACKVOX_UPDATE_NOTICE"):
+        return
+    info = updates.cached_update()
+    if info is not None:
+        print(f"[stackvox] {updates.format_notice(info)}", file=sys.stderr)
+
+
 def main() -> int:
     _configure_logging()
     argv = sys.argv[1:]
@@ -298,6 +323,8 @@ def main() -> int:
         argv = ["speak", *argv]
     elif not argv and not sys.stdin.isatty():
         argv = ["speak"]
+
+    _maybe_print_update_notice()
 
     parser = _build_parser(config.load_defaults())
     args = parser.parse_args(argv)

@@ -19,6 +19,17 @@ def _stdin_is_a_tty(mocker):
     mocker.patch.object(cli.sys.stdin, "isatty", return_value=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_network_update_check(mocker):
+    """Block the PyPI update check from making real HTTP requests in tests.
+
+    Tests that care about update-notice behaviour opt in by patching
+    `cli.updates.cached_update` / `cli.updates.check_for_update` themselves.
+    """
+    mocker.patch.object(cli.updates, "check_for_update", return_value=None)
+    mocker.patch.object(cli.updates, "cached_update", return_value=None)
+
+
 def test_bare_text_routes_to_speak(mocker):
     speak = mocker.patch.object(cli, "_cmd_speak", return_value=0)
     mocker.patch.object(cli.sys, "argv", ["stackvox", "hello world"])
@@ -222,6 +233,58 @@ class TestCmdStatus:
         rc = cli._cmd_status(_ns())
         assert rc == 1
         assert "stopped" in capsys.readouterr().out
+
+    def test_status_prints_update_notice_when_outdated(self, mocker, capsys):
+        mocker.patch.object(cli.daemon, "is_running", return_value=False)
+        mocker.patch.object(
+            cli.updates,
+            "check_for_update",
+            return_value=cli.updates.UpdateInfo(current="0.3.1", latest="0.4.0"),
+        )
+        cli._cmd_status(_ns())
+        out = capsys.readouterr().out
+        assert "0.3.1" in out
+        assert "0.4.0" in out
+        assert "pipx upgrade" in out
+
+    def test_status_prints_plain_version_when_up_to_date(self, mocker, capsys):
+        mocker.patch.object(cli.daemon, "is_running", return_value=False)
+        mocker.patch.object(cli.updates, "check_for_update", return_value=None)
+        mocker.patch.object(cli.updates, "_current_version", return_value="0.4.0")
+        cli._cmd_status(_ns())
+        out = capsys.readouterr().out
+        assert "version: 0.4.0" in out
+        assert "pipx upgrade" not in out
+
+
+class TestUpdateNotice:
+    def test_silent_by_default(self, mocker, monkeypatch, capsys):
+        monkeypatch.delenv("STACKVOX_UPDATE_NOTICE", raising=False)
+        mocker.patch.object(
+            cli.updates,
+            "cached_update",
+            return_value=cli.updates.UpdateInfo(current="0.3.1", latest="0.4.0"),
+        )
+        cli._maybe_print_update_notice()
+        assert capsys.readouterr().err == ""
+
+    def test_prints_to_stderr_when_opted_in(self, mocker, monkeypatch, capsys):
+        monkeypatch.setenv("STACKVOX_UPDATE_NOTICE", "1")
+        mocker.patch.object(
+            cli.updates,
+            "cached_update",
+            return_value=cli.updates.UpdateInfo(current="0.3.1", latest="0.4.0"),
+        )
+        cli._maybe_print_update_notice()
+        err = capsys.readouterr().err
+        assert "0.3.1" in err
+        assert "0.4.0" in err
+
+    def test_silent_when_no_update_even_with_opt_in(self, mocker, monkeypatch, capsys):
+        monkeypatch.setenv("STACKVOX_UPDATE_NOTICE", "1")
+        mocker.patch.object(cli.updates, "cached_update", return_value=None)
+        cli._maybe_print_update_notice()
+        assert capsys.readouterr().err == ""
 
 
 class TestCmdVoices:
