@@ -130,7 +130,10 @@ def _start_device_watcher() -> None:
 
     last_device = [_read_default_device()]
 
-    def _on_device_change(obj_id: int, n: int, addrs, data) -> int:
+    def _on_device_change(obj_id: int, n: int, addrs: Any, data: Any) -> int:
+        # `addrs` is a ctypes.POINTER(_PropAddr); `data` is a c_void_p — neither
+        # is needed because we already know which property fired (only one is
+        # registered) and we re-read the device ID directly.
         try:
             current = _read_default_device()
             if current and current != last_device[0]:
