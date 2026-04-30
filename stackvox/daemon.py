@@ -28,6 +28,7 @@ from typing import Any
 
 import sounddevice as sd
 
+from stackvox import updates
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
 from stackvox.paths import pid_path, socket_path
 
@@ -260,6 +261,22 @@ def is_running() -> bool:
     return _pid_alive(pid)
 
 
+def _check_for_update_async() -> None:
+    """Spawn a background thread that checks PyPI for an update and logs it.
+
+    Runs at daemon startup, off the critical path. The user is at a terminal
+    when they `stackvox serve`, so the daemon's stderr is visible — that's
+    the highest-leverage moment to surface "you should upgrade".
+    """
+
+    def _worker() -> None:
+        info = updates.check_for_update()
+        if info is not None:
+            logger.info(updates.format_notice(info))
+
+    threading.Thread(target=_worker, daemon=True, name="update-check").start()
+
+
 def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = DEFAULT_LANG) -> None:
     if is_running():
         raise RuntimeError(f"daemon already running (pid {PID_PATH.read_text().strip()})")
@@ -273,6 +290,7 @@ def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = 
     server.state = state  # type: ignore[attr-defined]
 
     PID_PATH.write_text(str(os.getpid()))
+    _check_for_update_async()
 
     def handle_signal(signum: int, frame: object) -> None:
         state.shutdown()
