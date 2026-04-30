@@ -12,10 +12,19 @@ Offline TTS using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [k
 From PyPI — recommended for most users:
 
 ```bash
-pipx install stackvox    # global CLI (`stackvox` and `stackvox-say` on PATH)
+pipx install stackvox       # `stackvox` CLI on PATH
 # or
-pip install stackvox     # use as a library
+pip install stackvox        # use as a library
 ```
+
+If you want the low-latency bash helper (`stackvox-say`) for shell scripts and hooks, install it on PATH after installing the package:
+
+```bash
+stackvox install-helper     # copies bash helper to ~/.local/bin
+                            # use --prefix DIR to install elsewhere
+```
+
+This is a one-time step. The helper is shipped as package data rather than as an automatic install script — explicit beats magical, and it keeps stackvox compatible with modern build backends. Skip it if you only ever use the Python `stackvox say` client.
 
 From git, if you want an unreleased commit:
 
