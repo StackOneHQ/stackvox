@@ -8,6 +8,7 @@ dist/
 *.bin
 out/
 *.wav
+!docs/demo.wav
 .DS_Store
 .env
 .coverage
