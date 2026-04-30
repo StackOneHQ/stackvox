@@ -7,6 +7,8 @@
 
 Offline TTS using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Apache 2.0 model, ~340MB, CPU real-time, plays straight to system audio. Designed to be importable as a Python library, drivable as a CLI, or poked via a unix socket for ~13ms speech requests from shell scripts.
 
+🔊 **Hear it:** [docs/demo.wav](./docs/demo.wav) — five seconds of two voices speaking the tagline (`af_heart` then `bf_emma`).
+
 ## Install
 
 From PyPI — recommended for most users:
@@ -177,6 +179,23 @@ If you're exposing stackvox through a different surface (HTTP server, shared sys
 Model weights (`kokoro-v1.0.onnx`, ~340 MB) and voices are downloaded from the [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) GitHub release assets on first use and cached under `~/.cache/stackvox/`. If you operate in a restricted environment, pre-seed that directory offline.
 
 Security issues themselves should not be filed as public GitHub issues — see [`SECURITY.md`](./SECURITY.md) for the disclosure process.
+
+## How does this compare to other TTS?
+
+stackvox is a fairly opinionated narrow slice of the TTS space. Here's where it sits next to the obvious neighbours:
+
+| Tool | Offline? | Quality | Latency (typical) | License | Best for |
+|---|---|---|---|---|---|
+| **stackvox** (Kokoro-82M) | ✅ | High (24kHz, 50+ voices, 9 languages) | ~300ms in-process · ~13ms via daemon helper | Apache 2.0 | Local apps, shell hooks, anything that wants natural voice without the cloud |
+| macOS `say` | ✅ | OK | ~50ms | macOS only | macOS-only scripts, "good enough" voice |
+| `espeak-ng` | ✅ | Robotic | ~10ms | GPL-3.0 | Accessibility, screen readers, embedded |
+| [Piper](https://github.com/rhasspy/piper) | ✅ | High | ~100ms | MIT | Similar use-case to stackvox; ONNX-based, more voices in some languages |
+| [Coqui TTS](https://github.com/coqui-ai/TTS) | ✅ | Very high (research models) | seconds | MPL-2.0 | Research, fine-tuning, voice cloning |
+| OpenAI / ElevenLabs / etc. | ❌ | Highest | network-bound | Proprietary | Production apps that can pay per-call and accept network dependency |
+
+Where stackvox tries to be different from Piper specifically: a **resident daemon + bash helper** path that gets you sub-15ms speech requests from shell scripts (CI hooks, terminal notifications, status announcements) without paying Python's startup cost on every call. That's basically the point — voice quality alone wouldn't be enough to switch off Piper, but the IPC story makes a difference for shell-driven workflows.
+
+Pick stackvox if you want **good voices, fully offline, with a fast shell-friendly API**.
 
 ## License & attributions
 
