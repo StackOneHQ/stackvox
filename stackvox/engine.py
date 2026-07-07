@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import re
 import sys
 import threading
 import urllib.request
@@ -69,6 +71,17 @@ def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     return model_path, voices_path
 
 
+# Split after ., !, or ? that is followed by whitespace, and on newlines. The
+# whitespace requirement leaves decimals ("0.95") and mid-token dots
+# ("file.ts") intact, which is good enough for speech chunking.
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Break text into sentence-ish chunks for low-latency streaming playback."""
+    return [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+
+
 class Stackvox:
     """Reusable TTS engine. Load the model once, speak many times.
 
@@ -89,6 +102,8 @@ class Stackvox:
         self.lang = lang
         model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
         self._kokoro = Kokoro(str(model_path), str(voices_path))
+        self._stop_event = threading.Event()
+        self._play_thread: threading.Thread | None = None
 
     def synthesize(
         self,
@@ -114,14 +129,73 @@ class Stackvox:
         lang: str | None = None,
         blocking: bool = True,
     ) -> None:
-        """Synthesize and play through the system default output device."""
-        samples, sample_rate = self.synthesize(text, voice=voice, speed=speed, lang=lang)
-        sd.play(samples, sample_rate)
+        """Synthesize and play through the system default output device.
+
+        Streams sentence by sentence: the first sentence starts playing as soon
+        as it is synthesized (~0.2s) while the rest synthesize in the background,
+        rather than waiting for the whole text to synthesize first.
+        """
+        self._stop_event.clear()
         if blocking:
-            sd.wait()
+            self._stream_play(text, voice=voice, speed=speed, lang=lang)
+        else:
+            self._play_thread = threading.Thread(
+                target=self._stream_play,
+                kwargs={"text": text, "voice": voice, "speed": speed, "lang": lang},
+                daemon=True,
+            )
+            self._play_thread.start()
+
+    def _stream_play(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
+    ) -> None:
+        """Synthesize sentence by sentence and play each as it is ready.
+
+        Kokoro batches by phoneme count (~510), so a whole paragraph synthesizes
+        as one blob before any audio — the source of the lead-in lag. Splitting
+        into sentences ourselves means the first sentence (~0.2s to synthesize)
+        plays almost immediately. A producer thread synthesizes ahead into a
+        bounded queue while this thread plays, so later sentences are usually
+        ready by the time the previous one finishes.
+        """
+        sentences = _split_sentences(text)
+        if not sentences:
+            return
+
+        chunks: queue.Queue = queue.Queue(maxsize=8)
+        sentinel = object()
+
+        def _produce() -> None:
+            try:
+                for sentence in sentences:
+                    if self._stop_event.is_set():
+                        break
+                    chunks.put(self.synthesize(sentence, voice=voice, speed=speed, lang=lang))
+            except Exception:
+                logger.exception("synthesis error")
+            finally:
+                chunks.put(sentinel)
+
+        producer = threading.Thread(target=_produce, daemon=True, name="stackvox-synth")
+        producer.start()
+        try:
+            while not self._stop_event.is_set():
+                item = chunks.get()
+                if item is sentinel:
+                    break
+                samples, sample_rate = item
+                sd.play(samples, sample_rate)
+                sd.wait()
+        finally:
+            producer.join(timeout=1.0)
 
     def stop(self) -> None:
         """Stop any in-progress playback started with blocking=False."""
+        self._stop_event.set()
         sd.stop()
 
     def voices(self) -> list[str]:

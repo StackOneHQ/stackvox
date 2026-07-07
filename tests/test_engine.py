@@ -99,23 +99,72 @@ class TestSynthesize:
 
 
 class TestSpeak:
-    def test_blocking_calls_play_and_wait(self, fake_kokoro, fake_audio):
-        fake_kokoro.return_value.create.return_value = (np.zeros(10), 24000)
-        tts = engine.Stackvox()
-        tts.speak("hi")
-        engine.sd.play.assert_called_once()
-        engine.sd.wait.assert_called_once()
+    def test_blocking_synthesizes_and_plays_each_sentence(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
 
-    def test_non_blocking_skips_wait(self, fake_kokoro, fake_audio):
-        fake_kokoro.return_value.create.return_value = (np.zeros(10), 24000)
-        tts = engine.Stackvox()
-        tts.speak("hi", blocking=False)
-        engine.sd.play.assert_called_once()
-        engine.sd.wait.assert_not_called()
+        engine.Stackvox().speak("One sentence. Two sentence. Three here.")
 
-    def test_stop_calls_sounddevice_stop(self, fake_kokoro, fake_audio):
-        engine.Stackvox().stop()
+        # One synth + play cycle per sentence — that's what enables early audio.
+        assert fake_kokoro.return_value.create.call_count == 3
+        assert engine.sd.play.call_count == 3
+        assert engine.sd.wait.call_count == 3
+
+    def test_single_sentence_plays_once(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
+        engine.Stackvox().speak("Just one sentence with no terminal punctuation")
+        assert engine.sd.play.call_count == 1
+
+    def test_non_blocking_plays_in_background_thread(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
+        tts = engine.Stackvox()
+
+        tts.speak("hi there", blocking=False)
+
+        assert tts._play_thread is not None
+        tts._play_thread.join(timeout=5)
+        engine.sd.play.assert_called()
+
+    def test_passes_engine_defaults_to_synthesis(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        engine.Stackvox(voice="af_sarah", speed=1.0, lang="en-us").speak("hello")
+        fake_kokoro.return_value.create.assert_called_once_with(
+            "hello", voice="af_sarah", speed=1.0, lang="en-us"
+        )
+
+    def test_per_call_overrides_take_priority(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        engine.Stackvox(voice="af_sarah", speed=1.0, lang="en-us").speak(
+            "hi", voice="bf_emma", speed=1.5, lang="en-gb"
+        )
+        fake_kokoro.return_value.create.assert_called_once_with(
+            "hi", voice="bf_emma", speed=1.5, lang="en-gb"
+        )
+
+    def test_stop_sets_event_and_calls_sounddevice_stop(self, fake_kokoro, fake_audio):
+        tts = engine.Stackvox()
+        tts.stop()
+        assert tts._stop_event.is_set()
         engine.sd.stop.assert_called_once()
+
+
+class TestSplitSentences:
+    def test_splits_on_sentence_punctuation(self):
+        assert engine._split_sentences("One. Two! Three?") == ["One.", "Two!", "Three?"]
+
+    def test_leaves_decimals_and_mid_token_dots_intact(self):
+        assert engine._split_sentences("Set speed 0.95 in config.toml now.") == [
+            "Set speed 0.95 in config.toml now."
+        ]
+
+    def test_splits_on_newlines(self):
+        assert engine._split_sentences("Line one\nLine two\n\nLine three") == [
+            "Line one",
+            "Line two",
+            "Line three",
+        ]
+
+    def test_blank_text_yields_no_sentences(self):
+        assert engine._split_sentences("   \n  ") == []
 
 
 class TestVoices:

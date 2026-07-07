@@ -100,7 +100,11 @@ show_missing = true
 skip_covered = false
 
 [tool.mypy]
-python_version = "3.10"
+# Matches the interpreter CI runs mypy under, and must be >= 3.12: numpy's
+# bundled stubs use PEP 695 `type` aliases, which mypy rejects as a syntax
+# error when told to target an older Python. Runtime support for 3.10+ is
+# still verified by the pytest matrix (py3.10–3.13).
+python_version = "3.12"
 files = ["stackvox", "tests"]
 warn_unused_ignores = true
 warn_redundant_casts = true
