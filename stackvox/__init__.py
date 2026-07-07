@@ -5,6 +5,7 @@ from importlib.metadata import version as _pkg_version
 
 from stackvox import daemon
 from stackvox.engine import Stackvox, speak, synthesize
+from stackvox.text import normalize_for_speech
 
 try:
     __version__ = _pkg_version("stackvox")
@@ -13,4 +14,4 @@ except PackageNotFoundError:
     # bootstrap before `pip install -e .` has completed).
     __version__ = "0.0.0+unknown"
 
-__all__ = ["Stackvox", "daemon", "speak", "synthesize"]
+__all__ = ["Stackvox", "daemon", "normalize_for_speech", "speak", "synthesize"]
