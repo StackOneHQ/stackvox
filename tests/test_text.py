@@ -120,6 +120,48 @@ def test_tables_as_csv():
     assert markdown_to_paragraphs(md, tables="csv") == ["A, B", "1, 2"]
 
 
+def test_tables_without_outer_pipes_are_recognized():
+    md = "A | B\n--- | ---\n1 | 2"
+    assert markdown_to_paragraphs(md) == []
+    assert markdown_to_paragraphs(md, tables="csv") == ["A, B", "1, 2"]
+
+
+def test_code_identifiers_are_not_treated_as_emphasis():
+    # __init__, **kwargs and *args are not emphasis in CommonMark — keep them.
+    md = "The `__init__` method takes **kwargs and *args."
+    assert markdown_to_paragraphs(md) == ["The __init__ method takes **kwargs and *args."]
+
+
+def test_paired_emphasis_markers_are_stripped():
+    md = "This is **bold** and *italic* text."
+    assert markdown_to_paragraphs(md) == ["This is bold and italic text."]
+
+
+def test_angle_brackets_in_prose_are_kept():
+    # Only real HTML tags are stripped, not comparisons.
+    assert markdown_to_paragraphs("Voltage: x < y and y > z.") == ["Voltage: x < y and y > z."]
+    assert markdown_to_paragraphs("Wrap <b>x</b> now.") == ["Wrap x now."]
+
+
+def test_bare_urls_and_reference_definitions_are_dropped():
+    md = "See [the docs][docs] here.\n\n[docs]: https://example.com/path"
+    assert markdown_to_paragraphs(md) == ["See the docs here."]
+    # whitespace left by the stripped URL is collapsed by the full pipeline
+    assert normalize_for_speech("Go to https://example.com now.") == "Go to now."
+
+
+def test_setext_underline_is_dropped():
+    assert markdown_to_paragraphs("The Verdict\n===========\n\nBody.") == ["The Verdict", "Body."]
+
+
+def test_task_list_checkboxes_are_stripped():
+    assert markdown_to_paragraphs("- [ ] todo\n- [x] done") == ["todo", "done"]
+
+
+def test_nested_blockquote_markers_are_stripped():
+    assert markdown_to_paragraphs("> > deeply quoted") == ["deeply quoted"]
+
+
 # --- end to end ------------------------------------------------------------
 
 

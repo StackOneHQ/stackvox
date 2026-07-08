@@ -138,9 +138,15 @@ def _strip_md_inline(line: str) -> str:
     line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)  # inline links -> text
     line = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", line)  # reference links -> text
     line = re.sub(r"`([^`]+)`", r"\1", line)  # inline code -> text
-    line = re.sub(r"(\*\*|__|~~|\*)", "", line)  # emphasis (leave lone _ for snake_case)
     line = re.sub(r"<!--.*?-->", "", line)  # HTML comments
-    line = re.sub(r"<[^>]+>", "", line)  # stray HTML tags
+    line = re.sub(r"</?[a-zA-Z][^>]*>", "", line)  # real tags + <url> autolinks; leaves "a < b"
+    line = re.sub(r"https?://\S+", "", line)  # bare URLs: strip rather than read them aloud
+    # Emphasis: only strip *paired, boundary-flanked* markers, so code-ish tokens
+    # that aren't emphasis in CommonMark — *args, **kwargs, __init__, snake_case —
+    # survive intact. Underscores are left alone entirely (TTS doesn't voice them).
+    line = re.sub(r"(?<![*\w])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![*\w])", r"\1", line)  # bold
+    line = re.sub(r"(?<![*\w])\*(?=\S)(.+?)(?<=\S)\*(?![*\w])", r"\1", line)  # italic
+    line = re.sub(r"(?<!~)~~(?=\S)(.+?)(?<=\S)~~(?!~)", r"\1", line)  # strikethrough
     return line
 
 
@@ -155,37 +161,73 @@ def markdown_to_paragraphs(text: str, *, tables: str = "drop", strip_emoji_flag:
 
     paragraphs: list[str] = []
     current: list[str] = []
+    in_table = False
 
     def flush() -> None:
         if current:
             paragraphs.append(" ".join(current))
             current.clear()
 
+    def emit_csv_row(cells_source: str) -> None:
+        cells = [c.strip() for c in _strip_md_inline(cells_source.strip("|")).split("|")]
+        joined = ", ".join(c for c in cells if c)
+        if joined:
+            paragraphs.append(joined)
+
     for raw in text.splitlines():
         row = raw.strip()
 
-        # table separator row ( |---|---| ) — always dropped
-        if re.fullmatch(r"\|?[\s:|-]*-[\s:|-]*\|?", row):
+        if not row:  # blank line ends the current paragraph and any table block
             flush()
+            in_table = False
             continue
-        # full table row
-        if len(row) >= 2 and row.startswith("|") and row.endswith("|"):
-            flush()
-            if tables == "csv":
-                cells = [c.strip() for c in _strip_md_inline(row.strip("|")).split("|")]
-                joined = ", ".join(c for c in cells if c)
-                if joined:
-                    paragraphs.append(joined)
-            continue
-        # horizontal rule
-        if re.fullmatch(r"([-*_])(?:\s*\1){2,}", row):
+
+        # link reference definition ( [id]: https://… ) — invisible when rendered
+        if re.match(r"^\[[^\]]+\]:\s*\S", row):
             flush()
             continue
 
+        # table separator row ( |---|---| or --- | --- )
+        if re.fullmatch(r"\|?[\s:|-]*-[\s:|-]*\|?", row):
+            # Only a *table* separator if the line above held cells; otherwise it's
+            # a `---` horizontal rule / setext underline (no table context).
+            if current and "|" in current[-1]:
+                header = current.pop()
+                flush()
+                if tables == "csv":
+                    emit_csv_row(header)
+                in_table = True
+            else:
+                flush()
+                in_table = False
+            continue
+
+        # setext underline ( === ) — drop so it isn't voiced as "equals equals…"
+        if re.fullmatch(r"=+", row):
+            flush()
+            continue
+
+        # table row: outer-pipe form, or a bare-pipe row within a table block
+        outer_pipe = len(row) >= 2 and row.startswith("|") and row.endswith("|")
+        if outer_pipe or (in_table and "|" in row):
+            flush()
+            if tables == "csv":
+                emit_csv_row(row)
+            continue
+
+        # horizontal rule ( *** / ___ ; --- is handled by the separator branch )
+        if re.fullmatch(r"([-*_])(?:\s*\1){2,}", row):
+            flush()
+            in_table = False
+            continue
+
+        in_table = False
         is_heading = re.match(r"^\s{0,3}#{1,6}\s+", raw)
         is_item = re.match(r"^\s*([-*+]|\d+[.)])\s+", raw)
-        cleaned = _strip_md_inline(re.sub(r"^\s{0,3}(#{1,6}\s*|>\s?)", "", raw))
+        cleaned = _strip_md_inline(re.sub(r"^\s{0,3}(#{1,6}\s*|(?:>\s?)+)", "", raw))
         cleaned = re.sub(r"^\s*([-*+]|\d+[.)])\s+", "", cleaned).strip()
+        if is_item:  # drop task-list checkboxes ( - [ ] / - [x] )
+            cleaned = re.sub(r"^\[[ xX]\]\s+", "", cleaned).strip()
 
         if is_heading or is_item:  # each stands alone -> its own pause
             flush()
