@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import queue
+import re
 import sys
 import threading
 import urllib.request
@@ -69,6 +71,17 @@ def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     return model_path, voices_path
 
 
+# Split after ., !, or ? that is followed by whitespace, and on newlines. The
+# whitespace requirement leaves decimals ("0.95") and mid-token dots
+# ("file.ts") intact, which is good enough for speech chunking.
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Break text into sentence-ish chunks for low-latency streaming playback."""
+    return [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
+
+
 class Stackvox:
     """Reusable TTS engine. Load the model once, speak many times.
 
@@ -89,6 +102,8 @@ class Stackvox:
         self.lang = lang
         model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
         self._kokoro = Kokoro(str(model_path), str(voices_path))
+        self._stop_event = threading.Event()
+        self._play_thread: threading.Thread | None = None
 
     def synthesize(
         self,
@@ -106,6 +121,21 @@ class Stackvox:
         )
         return samples, sample_rate
 
+    def _cancel_active(self) -> None:
+        """Supersede any in-progress stream so a new ``speak`` starts clean.
+
+        Signals the running stream's stop event and joins its thread, so we
+        never overlap two streams on the shared output device or orphan the
+        previous playback thread.
+        """
+        thread = self._play_thread
+        self._play_thread = None
+        if thread is None or thread is threading.current_thread() or not thread.is_alive():
+            return
+        self._stop_event.set()
+        sd.stop()
+        thread.join()
+
     def speak(
         self,
         text: str,
@@ -114,14 +144,98 @@ class Stackvox:
         lang: str | None = None,
         blocking: bool = True,
     ) -> None:
-        """Synthesize and play through the system default output device."""
-        samples, sample_rate = self.synthesize(text, voice=voice, speed=speed, lang=lang)
-        sd.play(samples, sample_rate)
+        """Synthesize and play through the system default output device.
+
+        Streams sentence by sentence: the first sentence starts playing as soon
+        as it is synthesized (~0.2s) while the rest synthesize in the background,
+        rather than waiting for the whole text to synthesize first.
+        """
+        self._cancel_active()
+        # Each stream gets its own cancellation token, so a later speak() (or a
+        # stop() in between) can never clear an older stream's cancellation.
+        stop_event = threading.Event()
+        self._stop_event = stop_event
         if blocking:
-            sd.wait()
+            self._stream_play(text, stop_event, voice=voice, speed=speed, lang=lang)
+            return
+
+        def _run() -> None:
+            try:
+                self._stream_play(text, stop_event, voice=voice, speed=speed, lang=lang)
+            except Exception:
+                logger.exception("stackvox playback failed")
+
+        self._play_thread = threading.Thread(target=_run, daemon=True, name="stackvox-play")
+        self._play_thread.start()
+
+    def _stream_play(
+        self,
+        text: str,
+        stop_event: threading.Event,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
+    ) -> None:
+        """Synthesize sentence by sentence and play each as it is ready.
+
+        Kokoro batches by phoneme count (~510), so a whole paragraph synthesizes
+        as one blob before any audio — the source of the lead-in lag. Splitting
+        into sentences ourselves means the first sentence (~0.2s to synthesize)
+        plays almost immediately. A producer thread synthesizes ahead into a
+        bounded queue while this thread plays, so later sentences are usually
+        ready by the time the previous one finishes.
+
+        A synthesis failure is re-raised rather than swallowed, so a blocking
+        caller sees the error instead of silent success; ``stop_event`` cancels
+        the stream between sentences.
+        """
+        sentences = _split_sentences(text)
+        if not sentences:
+            return
+
+        chunks: queue.Queue = queue.Queue(maxsize=8)
+        sentinel = object()
+
+        def _produce() -> None:
+            try:
+                for sentence in sentences:
+                    if stop_event.is_set():
+                        break
+                    chunks.put(self.synthesize(sentence, voice=voice, speed=speed, lang=lang))
+            except Exception as exc:  # hand the failure to the consumer to re-raise
+                chunks.put(exc)
+            finally:
+                chunks.put(sentinel)
+
+        producer = threading.Thread(target=_produce, daemon=True, name="stackvox-synth")
+        producer.start()
+        error: Exception | None = None
+        try:
+            while not stop_event.is_set():
+                item = chunks.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    error = item
+                    break
+                samples, sample_rate = item
+                sd.play(samples, sample_rate)
+                sd.wait()
+        finally:
+            # Stop the producer and keep draining so it can never stay parked on
+            # a full queue — that's what guarantees the synth thread always exits.
+            stop_event.set()
+            while producer.is_alive():
+                try:
+                    chunks.get_nowait()
+                except queue.Empty:
+                    producer.join(timeout=0.05)
+        if error is not None:
+            raise error
 
     def stop(self) -> None:
         """Stop any in-progress playback started with blocking=False."""
+        self._stop_event.set()
         sd.stop()
 
     def voices(self) -> list[str]:
