@@ -8,6 +8,7 @@ runtime dependencies.
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import numpy as np
@@ -145,6 +146,38 @@ class TestSpeak:
         tts.stop()
         assert tts._stop_event.is_set()
         engine.sd.stop.assert_called_once()
+
+    def test_blocking_surfaces_synthesis_errors(self, fake_kokoro, fake_audio):
+        # Regression: a Kokoro failure must propagate, not report silent success.
+        fake_kokoro.return_value.create.side_effect = RuntimeError("boom")
+        tts = engine.Stackvox()
+        with pytest.raises(RuntimeError, match="boom"):
+            tts.speak("hello there")
+
+    def test_non_blocking_logs_synthesis_errors_without_crashing(self, fake_kokoro, fake_audio, caplog):
+        fake_kokoro.return_value.create.side_effect = RuntimeError("boom")
+        tts = engine.Stackvox()
+        with caplog.at_level(logging.ERROR):
+            tts.speak("hi there", blocking=False)
+            assert tts._play_thread is not None
+            tts._play_thread.join(timeout=5)
+        assert "playback failed" in caplog.text
+
+    def test_each_speak_uses_a_fresh_stop_event(self, fake_kokoro, fake_audio):
+        # A per-stream event means a later speak() can't clear an older stream's
+        # cancellation (and stop() only affects the stream it was called on).
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        tts = engine.Stackvox()
+        original = tts._stop_event
+        tts.speak("one sentence")
+        assert tts._stop_event is not original
+
+    def test_speak_after_stop_still_plays(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        tts = engine.Stackvox()
+        tts.stop()
+        tts.speak("hello world")
+        engine.sd.play.assert_called()
 
 
 class TestSplitSentences:
