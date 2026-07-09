@@ -54,7 +54,22 @@ stackvox welcome                    # multilingual welcome (6 languages)
 stackvox voices                     # list all voice ids
 echo "from a pipe" | stackvox       # piped stdin works for speak/say
 stackvox speak --file message.txt   # read a whole file
+stackvox paths                      # print resolved cache / socket / pid paths
+stackvox config                     # print resolved default voice/speed/lang
 ```
+
+### Speech normalization
+
+`normalize_for_speech` (Markdown → speakable prose: strip formatting, expand units/numbers, shape pauses, apply a pronunciation dictionary) is available from the shell — no Python import required:
+
+```bash
+stackvox normalize --file post.md               # print normalized text (pipe / debug)
+stackvox normalize --tables csv --strip-emoji < response.md
+stackvox speak --normalize --file post.md       # normalize, then synthesize
+stackvox say   --normalize "**Shipped** 1,198.9 MPG"   # normalize, then send to daemon
+```
+
+`--normalize` is off by default on `speak`/`say`, so notification phrases synthesize exactly as before. The tuning flags mirror the library defaults (all on except emoji-strip): `--no-markdown`, `--no-expand-units`, `--no-expand-numbers`, `--no-pauses`, `--tables {drop,csv}`, `--strip-emoji`, `--no-terminal-stops`, `--locale`, and a `--pronunciations FILE` (a JSON `{"written": "spoken"}` map, applied whole-word and case-insensitively).
 
 Bash completion:
 

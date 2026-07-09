@@ -121,6 +121,25 @@ def _ns(**kwargs):
     return argparse.Namespace(**kwargs)
 
 
+def _norm_ns(text=None, file=None, **overrides):
+    """Namespace carrying the normalize flags at their library defaults."""
+    base = dict(
+        text=text,
+        file=file,
+        markdown=True,
+        pronunciations=None,
+        expand_units=True,
+        expand_numbers=True,
+        pauses=True,
+        tables="drop",
+        strip_emoji=False,
+        terminal_stops=True,
+        locale="en-GB",
+    )
+    base.update(overrides)
+    return _ns(**base)
+
+
 class TestCmdSpeak:
     def test_with_text_calls_engine_speak(self, fake_stackvox):
         rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="hello", out=None))
@@ -148,6 +167,18 @@ class TestCmdSpeak:
         assert rc == 1
         assert "provide text" in capsys.readouterr().err
         fake_stackvox.return_value.speak.assert_not_called()
+
+    def test_normalize_transforms_text_before_engine(self, fake_stackvox):
+        args = _norm_ns(text="# Heading", voice="af_sarah", speed=1.0, lang="en-us", out=None, normalize=True)
+        rc = cli._cmd_speak(args)
+        assert rc == 0
+        fake_stackvox.return_value.speak.assert_called_once_with("Heading.")
+
+    def test_no_normalize_leaves_text_untouched(self, fake_stackvox):
+        # `normalize` absent from the namespace mirrors the flag being off.
+        rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="# Heading", out=None))
+        assert rc == 0
+        fake_stackvox.return_value.speak.assert_called_once_with("# Heading")
 
 
 class TestCmdSay:
@@ -181,6 +212,15 @@ class TestCmdSay:
     def test_blank_input_returns_one(self, capsys):
         rc = cli._cmd_say(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="", fallback_say=False))
         assert rc == 1
+
+    def test_normalize_transforms_text_before_daemon(self, mocker):
+        say = mocker.patch.object(cli.daemon, "say", return_value=(True, "ok"))
+        args = _norm_ns(
+            text="# Heading", voice="af_sarah", speed=1.0, lang="en-us", fallback_say=False, normalize=True
+        )
+        rc = cli._cmd_say(args)
+        assert rc == 0
+        assert say.call_args.args[0] == "Heading."
 
 
 class TestCmdServe:
@@ -353,3 +393,112 @@ class TestCmdInstallHelper:
         mocker.patch.dict("os.environ", {"PATH": f"{prefix}:/usr/bin"}, clear=False)
         cli._cmd_install_helper(_ns(prefix=prefix))
         assert "not on your PATH" not in capsys.readouterr().err
+
+
+class TestCmdNormalize:
+    def test_markdown_reduces_to_prose_with_terminal_stops(self, capsys):
+        rc = cli._cmd_normalize(_norm_ns(text="# Heading\n\nBody"))
+        assert rc == 0
+        assert capsys.readouterr().out.splitlines() == ["Heading.", "Body."]
+
+    def test_number_and_decimal_expansion(self, capsys):
+        rc = cli._cmd_normalize(_norm_ns(text="It was 1,198.9 total"))
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == "It was 1198 point 9 total."
+
+    def test_pronunciations_file_is_applied(self, capsys, tmp_path):
+        pron = tmp_path / "dict.json"
+        pron.write_text('{"Redis": "ree-diss"}', encoding="utf-8")
+        rc = cli._cmd_normalize(_norm_ns(text="Redis is fast", pronunciations=pron))
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == "ree-diss is fast."
+
+    def test_blank_input_returns_one(self, capsys):
+        rc = cli._cmd_normalize(_norm_ns(text="   "))
+        assert rc == 1
+        assert "provide text" in capsys.readouterr().err
+
+    def test_bad_pronunciations_file_errors_cleanly(self, capsys, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text('["not", "a", "map"]', encoding="utf-8")
+        rc = cli._cmd_normalize(_norm_ns(text="hi", pronunciations=bad))
+        assert rc == 1
+        assert "string -> string" in capsys.readouterr().err
+
+
+class TestLoadPronunciations:
+    def test_none_path_returns_none(self):
+        assert cli._load_pronunciations(None) is None
+
+    def test_valid_json_returns_mapping(self, tmp_path):
+        path = tmp_path / "d.json"
+        path.write_text('{"CLI": "see ell eye"}', encoding="utf-8")
+        assert cli._load_pronunciations(path) == {"CLI": "see ell eye"}
+
+    def test_non_object_json_raises(self, tmp_path):
+        path = tmp_path / "d.json"
+        path.write_text('["not", "a", "map"]', encoding="utf-8")
+        with pytest.raises(ValueError, match="string -> string"):
+            cli._load_pronunciations(path)
+
+    def test_non_string_values_raise(self, tmp_path):
+        path = tmp_path / "d.json"
+        path.write_text('{"n": 3}', encoding="utf-8")
+        with pytest.raises(ValueError, match="string -> string"):
+            cli._load_pronunciations(path)
+
+
+class TestCmdPaths:
+    def test_prints_the_three_paths(self, capsys):
+        rc = cli._cmd_paths(_ns())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "cache_dir:" in out
+        assert "socket_path:" in out
+        assert "pid_path:" in out
+
+
+class TestCmdConfig:
+    def test_prints_resolved_defaults_and_path(self, mocker, capsys, tmp_path):
+        cfg = tmp_path / "config.toml"  # absent → "not present" note
+        mocker.patch.object(cli.config, "config_path", return_value=cfg)
+        mocker.patch.object(
+            cli.config,
+            "load_defaults",
+            return_value=cli.config.Defaults(voice="bf_emma", speed=1.1, lang="en-gb"),
+        )
+        rc = cli._cmd_config(_ns())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "not present" in out
+        assert "bf_emma" in out
+        assert "1.1" in out
+        assert "en-gb" in out
+
+
+class TestNormalizeParsing:
+    def test_normalize_subcommand_routes(self, mocker):
+        norm = mocker.patch.object(cli, "_cmd_normalize", return_value=0)
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "normalize", "--tables", "csv", "hi"])
+        assert cli.main() == 0
+        args = norm.call_args.args[0]
+        assert args.cmd == "normalize"
+        assert args.tables == "csv"
+        assert args.text == "hi"
+
+    def test_speak_normalize_switch_parses(self, mocker):
+        speak = mocker.patch.object(cli, "_cmd_speak", return_value=0)
+        mocker.patch.object(
+            cli.sys, "argv", ["stackvox", "speak", "--normalize", "--strip-emoji", "--no-pauses", "hi"]
+        )
+        assert cli.main() == 0
+        args = speak.call_args.args[0]
+        assert args.normalize is True
+        assert args.strip_emoji is True
+        assert args.pauses is False
+
+    def test_paths_and_config_route(self, mocker):
+        paths_handler = mocker.patch.object(cli, "_cmd_paths", return_value=0)
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "paths"])
+        assert cli.main() == 0
+        assert paths_handler.called

@@ -10,8 +10,9 @@ from pathlib import Path
 
 import soundfile as sf
 
-from stackvox import config, daemon, updates
+from stackvox import config, daemon, paths, updates
 from stackvox.engine import Stackvox
+from stackvox.text import normalize_for_speech
 
 
 def _configure_logging() -> None:
@@ -28,8 +29,11 @@ SUBCOMMANDS = {
     "status",
     "say",
     "speak",
+    "normalize",
     "voices",
     "welcome",
+    "paths",
+    "config",
     "completion",
     "install-helper",
 }
@@ -47,12 +51,12 @@ _stackvox_completion() {
     subcommand="${COMP_WORDS[1]:-}"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "speak say serve stop status voices welcome completion install-helper" -- "$cur") )
+        COMPREPLY=( $(compgen -W "speak say normalize serve stop status voices welcome paths config completion install-helper" -- "$cur") )
         return 0
     fi
 
     case "$prev" in
-        --file|--out)
+        --file|--out|--pronunciations)
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
@@ -68,14 +72,27 @@ _stackvox_completion() {
             COMPREPLY=( $(compgen -W "en-us en-gb fr-fr it hi pt-br es ja zh" -- "$cur") )
             return 0
             ;;
+        --tables)
+            COMPREPLY=( $(compgen -W "drop csv" -- "$cur") )
+            return 0
+            ;;
+        --locale)
+            COMPREPLY=( $(compgen -W "en-GB" -- "$cur") )
+            return 0
+            ;;
     esac
+
+    local norm_flags="--no-markdown --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --strip-emoji --no-terminal-stops --locale"
 
     case "$subcommand" in
         speak)
-            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --out --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --out --normalize $norm_flags --help" -- "$cur") )
             ;;
         say)
-            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --fallback-say --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --fallback-say --normalize $norm_flags --help" -- "$cur") )
+            ;;
+        normalize)
+            COMPREPLY=( $(compgen -W "--file $norm_flags --help" -- "$cur") )
             ;;
         serve)
             COMPREPLY=( $(compgen -W "--voice --speed --lang --help" -- "$cur") )
@@ -115,6 +132,7 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
     p_speak.add_argument("text", nargs="?")
     p_speak.add_argument("--file", type=Path)
     p_speak.add_argument("--out", type=Path, help="Write wav instead of playing")
+    _add_normalize_args(p_speak, with_switch=True)
 
     p_say = sub.add_parser("say", help="Send text to daemon (fast; fails if daemon not running)")
     _add_voice_args(p_say, defaults)
@@ -123,6 +141,15 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
     p_say.add_argument(
         "--fallback-say", action="store_true", help="Shell out to macOS `say` if daemon unreachable"
     )
+    _add_normalize_args(p_say, with_switch=True)
+
+    p_normalize = sub.add_parser(
+        "normalize",
+        help="Print speech-normalized text (Markdown -> speakable prose); no synthesis",
+    )
+    p_normalize.add_argument("text", nargs="?")
+    p_normalize.add_argument("--file", type=Path)
+    _add_normalize_args(p_normalize, with_switch=False)
 
     p_serve = sub.add_parser("serve", help="Run the daemon in the foreground")
     _add_voice_args(p_serve, defaults)
@@ -131,6 +158,8 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
     sub.add_parser("status", help="Print daemon status")
     sub.add_parser("voices", help="List available voices")
     sub.add_parser("welcome", help="Play a multilingual welcome message")
+    sub.add_parser("paths", help="Print resolved cache / socket / pid file paths")
+    sub.add_parser("config", help="Print resolved default voice/speed/lang and config path")
 
     p_completion = sub.add_parser("completion", help="Print a shell completion script")
     p_completion.add_argument("shell", choices=["bash"], help="Shell to generate completion for")
@@ -155,6 +184,114 @@ def _add_voice_args(parser: argparse.ArgumentParser, defaults: config.Defaults) 
     parser.add_argument("--lang", default=defaults.lang)
 
 
+def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -> None:
+    """Flags mapping one-to-one onto ``stackvox.text.normalize_for_speech``.
+
+    Defaults mirror the library: markdown / units / numbers / pauses /
+    terminal-stops on, emoji-strip off, tables dropped, ``en-GB`` locale.
+
+    ``with_switch`` adds the ``--normalize`` master toggle used by ``speak`` and
+    ``say`` (off by default, so notification phrases synth exactly as before).
+    The ``normalize`` subcommand always normalizes, so it omits the switch.
+    """
+    if with_switch:
+        parser.add_argument(
+            "--normalize",
+            action="store_true",
+            help="Normalize text for speech before synthesizing (see `stackvox normalize`)",
+        )
+    parser.add_argument(
+        "--no-markdown", dest="markdown", action="store_false", help="Treat input as plain text, not Markdown"
+    )
+    parser.add_argument(
+        "--pronunciations",
+        type=Path,
+        help="JSON file mapping written -> spoken forms (whole-word, case-insensitive)",
+    )
+    parser.add_argument(
+        "--no-expand-units",
+        dest="expand_units",
+        action="store_false",
+        help="Leave £/p/kWh/MPG/kg/km and ÷ × = as written",
+    )
+    parser.add_argument(
+        "--no-expand-numbers",
+        dest="expand_numbers",
+        action="store_false",
+        help="Leave thousands separators and decimals as written",
+    )
+    parser.add_argument(
+        "--no-pauses",
+        dest="pauses",
+        action="store_false",
+        help="Do not reshape dashes / parentheses into pauses",
+    )
+    parser.add_argument(
+        "--tables",
+        choices=["drop", "csv"],
+        default="drop",
+        help="How Markdown tables are voiced (default: drop)",
+    )
+    parser.add_argument(
+        "--strip-emoji", dest="strip_emoji", action="store_true", help="Remove emoji before speaking"
+    )
+    parser.add_argument(
+        "--no-terminal-stops",
+        dest="terminal_stops",
+        action="store_false",
+        help="Do not add terminal punctuation so a pause lands between lines",
+    )
+    parser.add_argument("--locale", default="en-GB", help="Locale for unit/currency rules (default: en-GB)")
+
+
+def _load_pronunciations(path: Path | None) -> dict[str, str] | None:
+    """Load a ``{written: spoken}`` map from a JSON file.
+
+    Returns ``None`` when no path is given. Raises ``ValueError`` if the file
+    is not a flat table of string -> string entries, so a mistyped dict fails
+    loudly rather than silently voicing the wrong thing.
+    """
+    if path is None:
+        return None
+    import json
+
+    data = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in data.items()
+    ):
+        raise ValueError(f"{path}: expected a flat JSON object of string -> string entries")
+    return data
+
+
+def _normalize_kwargs(args: argparse.Namespace) -> dict:
+    """Collect the normalize_for_speech keyword arguments from parsed flags."""
+    return {
+        "markdown": args.markdown,
+        "pronunciations": _load_pronunciations(args.pronunciations),
+        "expand_units": args.expand_units,
+        "expand_numbers": args.expand_numbers,
+        "pauses": args.pauses,
+        "tables": args.tables,
+        "strip_emoji": args.strip_emoji,
+        "terminal_stops": args.terminal_stops,
+        "locale": args.locale,
+    }
+
+
+def _resolve_normalized(text: str, args: argparse.Namespace) -> str | None:
+    """Normalize ``text`` for speech, or print a clean error and return None.
+
+    A missing or malformed ``--pronunciations`` file surfaces here as an
+    ``OSError`` / ``ValueError`` (``json.JSONDecodeError`` is a ``ValueError``);
+    turn it into a one-line ``[stackvox] …`` message rather than a traceback.
+    """
+    try:
+        return normalize_for_speech(text, **_normalize_kwargs(args))
+    except (OSError, ValueError) as exc:
+        print(f"[stackvox] {exc}", file=sys.stderr)
+        return None
+
+
 def _read_text(args: argparse.Namespace) -> str | None:
     """Resolve the text to speak from --file, the positional, or piped stdin.
 
@@ -177,6 +314,10 @@ def _cmd_speak(args: argparse.Namespace) -> int:
     if not text or not text.strip():
         print("Error: provide text or --file", file=sys.stderr)
         return 1
+    if getattr(args, "normalize", False):
+        text = _resolve_normalized(text, args)
+        if text is None:
+            return 1
     tts = Stackvox(voice=args.voice, speed=args.speed, lang=args.lang)
     if args.out:
         samples, sr = tts.synthesize(text)
@@ -192,6 +333,10 @@ def _cmd_say(args: argparse.Namespace) -> int:
     if not text or not text.strip():
         print("Error: provide text or --file", file=sys.stderr)
         return 1
+    if getattr(args, "normalize", False):
+        text = _resolve_normalized(text, args)
+        if text is None:
+            return 1
     ok, resp = daemon.say(text, voice=args.voice, speed=args.speed, lang=args.lang)
     if ok:
         return 0
@@ -204,6 +349,18 @@ def _cmd_say(args: argparse.Namespace) -> int:
             return 0
     print(f"[stackvox] {resp}", file=sys.stderr)
     return 2
+
+
+def _cmd_normalize(args: argparse.Namespace) -> int:
+    text = _read_text(args)
+    if not text or not text.strip():
+        print("Error: provide text or --file", file=sys.stderr)
+        return 1
+    normalized = _resolve_normalized(text, args)
+    if normalized is None:
+        return 1
+    print(normalized)
+    return 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -245,6 +402,24 @@ def _cmd_voices(args: argparse.Namespace) -> int:
     tts = Stackvox()
     for name in tts.voices():
         print(name)
+    return 0
+
+
+def _cmd_paths(_: argparse.Namespace) -> int:
+    print(f"cache_dir:   {paths.cache_dir()}")
+    print(f"socket_path: {paths.socket_path()}")
+    print(f"pid_path:    {paths.pid_path()}")
+    return 0
+
+
+def _cmd_config(_: argparse.Namespace) -> int:
+    path = config.config_path()
+    present = "" if path.is_file() else " (not present; built-in defaults apply)"
+    defaults = config.load_defaults()
+    print(f"config_path: {path}{present}")
+    print(f"voice: {defaults.voice}")
+    print(f"speed: {defaults.speed}")
+    print(f"lang:  {defaults.lang}")
     return 0
 
 
@@ -336,11 +511,14 @@ def main() -> int:
     handlers = {
         "speak": _cmd_speak,
         "say": _cmd_say,
+        "normalize": _cmd_normalize,
         "serve": _cmd_serve,
         "stop": _cmd_stop,
         "status": _cmd_status,
         "voices": _cmd_voices,
         "welcome": _cmd_welcome,
+        "paths": _cmd_paths,
+        "config": _cmd_config,
         "completion": _cmd_completion,
         "install-helper": _cmd_install_helper,
     }
