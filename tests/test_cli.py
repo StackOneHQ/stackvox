@@ -261,6 +261,9 @@ class TestCmdStatus:
         pid_path.read_text.return_value = "12345\n"
         mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
         mocker.patch.object(cli.daemon, "SOCKET_PATH", "/tmp/x.sock")
+        # status now queries the running daemon's version; stub it so the test
+        # doesn't reach a real socket.
+        mocker.patch.object(cli.daemon, "version", return_value=(False, "n/a"))
 
         rc = cli._cmd_status(_ns())
 
@@ -268,6 +271,23 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "running" in out
         assert "12345" in out
+
+    def test_running_flags_daemon_version_skew(self, mocker, capsys):
+        mocker.patch.object(cli.daemon, "is_running", return_value=True)
+        pid_path = mocker.MagicMock()
+        pid_path.read_text.return_value = "1\n"
+        mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
+        mocker.patch.object(cli.daemon, "SOCKET_PATH", "/tmp/x.sock")
+        mocker.patch.object(cli.daemon, "version", return_value=(True, "0.5.0"))
+        mocker.patch.object(cli.updates, "_current_version", return_value="0.8.0")
+        mocker.patch.object(cli.updates, "check_for_update", return_value=None)
+
+        rc = cli._cmd_status(_ns())
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "0.5.0" in out and "0.8.0" in out  # the skew is surfaced
+        assert "restart" in out.lower()
 
     def test_stopped_returns_one(self, mocker, capsys):
         mocker.patch.object(cli.daemon, "is_running", return_value=False)

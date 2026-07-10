@@ -76,6 +76,22 @@ def test_ping_returns_ok(server: ServerHarness):
     assert _roundtrip(server.sock, json.dumps({"command": "ping"}) + "\n") == "ok"
 
 
+def test_version_returns_installed_version(server: ServerHarness):
+    from stackvox import updates
+
+    reply = _roundtrip(server.sock, json.dumps({"command": "version"}) + "\n")
+    assert reply == updates._current_version()
+
+
+def test_version_client_helper_reports_running_version(server: ServerHarness, monkeypatch):
+    from stackvox import daemon, updates
+
+    monkeypatch.setattr(daemon, "SOCKET_PATH", server.sock)
+    got, resp = daemon.version()
+    assert got is True
+    assert resp == updates._current_version()
+
+
 def test_plain_text_is_treated_as_text_field(server: ServerHarness):
     """Non-JSON payloads are accepted and wrapped as `{"text": line}`."""
     import time

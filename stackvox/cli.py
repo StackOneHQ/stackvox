@@ -389,9 +389,18 @@ def _cmd_stop(_: argparse.Namespace) -> int:
 
 
 def _cmd_status(_: argparse.Namespace) -> int:
+    installed = updates._current_version()
     if daemon.is_running():
         print(f"running (pid {daemon.PID_PATH.read_text().strip()}) on {daemon.SOCKET_PATH}")
         rc = 0
+        # The running daemon can lag the installed package if it wasn't restarted
+        # after an upgrade — surface that skew instead of trusting it blindly.
+        got, running_version = daemon.version()
+        if got and running_version != installed:
+            print(
+                f"daemon running {running_version}, but {installed} is installed "
+                f"— restart the daemon (stackvox stop; stackvox serve) to pick it up"
+            )
     else:
         print("stopped")
         rc = 1
