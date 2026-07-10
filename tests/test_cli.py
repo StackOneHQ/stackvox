@@ -128,6 +128,7 @@ def _norm_ns(text=None, file=None, **overrides):
         file=file,
         markdown=True,
         pronunciations=None,
+        dev_terms=True,
         expand_units=True,
         expand_numbers=True,
         pauses=True,
