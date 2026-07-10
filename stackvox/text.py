@@ -106,6 +106,28 @@ def apply_pronunciations(text: str, mapping: dict[str, str] | None) -> str:
     return text
 
 
+# Dev acronyms/terms espeak mispronounces — it reads them as a word ("CLI" ->
+# "kligh", "AWS" -> "awz", "URI" -> "yuri") instead of spelling them out.
+# Applied by default (dev_terms=True), whole-word and case-insensitive, so
+# lowercase "cli" is fixed too. Compound keys (ci/cd) precede their parts (ci)
+# so the specific form wins. Only terms espeak gets WRONG are here — API, URL,
+# JSON, YAML, HTTP, CRUD, nginx, etc. already voice correctly and are left alone.
+_DEV_PRONUNCIATIONS: dict[str, str] = {
+    "ci/cd": "C I C D",
+    "cli": "C L I",
+    "ci": "C I",
+    "ide": "I D E",
+    "aws": "A W S",
+    "uri": "U R I",
+    "iam": "I A M",
+    "saas": "sass",
+    "paas": "pass",
+    "tui": "T U I",
+    "postgresql": "postgres",
+    "kubectl": "kube control",
+}
+
+
 # --------------------------------------------------------------------------- #
 # Pauses                                                                      #
 # --------------------------------------------------------------------------- #
@@ -274,6 +296,7 @@ def normalize_for_speech(
     *,
     markdown: bool = True,
     pronunciations: dict[str, str] | None = None,
+    dev_terms: bool = True,
     expand_units: bool = True,
     expand_numbers: bool = True,
     pauses: bool = True,
@@ -285,6 +308,11 @@ def normalize_for_speech(
     """Normalize ``text`` into speakable prose. Returns paragraphs joined by
     newlines. See ``docs/speech-normalization.md`` for the full contract."""
     expand_units_flag, expand_numbers_flag = expand_units, expand_numbers
+    # Built-in dev-term fixes first; caller-supplied pronunciations override them
+    # (keyed case-insensitively, so a caller's "CLI" beats the default "cli").
+    effective_pronunciations: dict[str, str] = dict(_DEV_PRONUNCIATIONS) if dev_terms else {}
+    for written, spoken in (pronunciations or {}).items():
+        effective_pronunciations[written.lower()] = spoken
 
     if markdown:
         paragraphs = markdown_to_paragraphs(text, tables=tables, strip_emoji_flag=strip_emoji)
@@ -298,7 +326,7 @@ def normalize_for_speech(
     for para in paragraphs:
         shaped = _shape_paragraph(
             para,
-            pronunciations=pronunciations,
+            pronunciations=effective_pronunciations,
             expand_units_flag=expand_units_flag,
             expand_numbers_flag=expand_numbers_flag,
             pauses_flag=pauses,

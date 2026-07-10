@@ -195,3 +195,28 @@ def test_speaklast_style_normalization():
 def test_plain_text_mode_splits_paragraphs():
     out = normalize_for_speech("First para.\n\nSecond para.", markdown=False)
     assert out == "First para.\nSecond para."
+
+
+def test_dev_acronyms_are_spelled_out():
+    assert normalize_for_speech("Use the CLI.", markdown=False) == "Use the C L I."
+    assert "C L I" in normalize_for_speech("the cli tool", markdown=False)  # lowercase too
+    assert "A W S" in normalize_for_speech("deploy to AWS", markdown=False)
+    assert "U R I" in normalize_for_speech("parse the URI", markdown=False)
+    assert "C I C D" in normalize_for_speech("the CI/CD pipeline", markdown=False)
+
+
+def test_dev_terms_leave_correctly_voiced_acronyms_alone():
+    out = normalize_for_speech("Send JSON over HTTP to the API.", markdown=False)
+    assert "JSON" in out
+    assert "HTTP" in out
+    assert "API" in out
+
+
+def test_dev_terms_can_be_disabled():
+    assert normalize_for_speech("Use the CLI.", markdown=False, dev_terms=False) == "Use the CLI."
+
+
+def test_caller_pronunciations_override_dev_terms():
+    out = normalize_for_speech("Use the CLI.", markdown=False, pronunciations={"CLI": "command line"})
+    assert "command line" in out
+    assert "C L I" not in out

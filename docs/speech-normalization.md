@@ -31,7 +31,7 @@ the mechanism now and let each caller keep evolving its own dictionary.
 - Backward compatible — existing `speak`/`synthesize` behaviour unchanged unless opted in.
 
 **Non-goals**
-- Baking domain pronunciations (agy, StackOne, Redis…) into StackVox.
+- Baking **domain/org** pronunciations (agy, StackOne, Redis…) into StackVox — those stay per-consumer. Generic fixes for dev acronyms espeak plain *mispronounces* (CLI→"kligh", AWS→"awz", URI→"yuri", …) **are** shipped in core, on by default via `dev_terms` / `_DEV_PRONUNCIATIONS`.
 - Owning the blog's `say:` authoring directive (a Markdown-authoring convention; Claude responses never contain it).
 - Changing default synthesis behaviour or the daemon protocol.
 
@@ -94,7 +94,7 @@ stackvox normalize --file resp.md                          # print normalized te
 ### Illustrative dictionaries (stay per-consumer)
 
 - **Blog:** `agy, 1M, 175K, xhigh, SessionStart, PermissionRequest, StackOne, OAuth, Behan, Redis`
-- **speaklast (to tune by listening):** `StackOne, Redis, OAuth, CLI, npm, async, repo, MCP, …` — Claude leans on tool/lib/identifier names, so this dict will grow differently.
+- **speaklast (to tune by listening):** `StackOne, Redis, repo, …` — domain/product names Claude leans on. Generic dev acronyms (CLI, CI, AWS, URI, IAM…) now live in core's default `dev_terms` map, so they don't need repeating per-consumer.
 
 ## 6. Backward compatibility & rollout
 
