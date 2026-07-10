@@ -22,6 +22,12 @@ DEFAULT_VOICE = "af_sarah"
 DEFAULT_SPEED = 1.0
 DEFAULT_LANG = "en-us"
 
+# Streaming playback smoothing: play a touch of silence before the first word so
+# output-device warm-up (notably a Bluetooth codec/profile switch) lands during
+# silence, and ramp the opening samples up from zero to avoid an onset click.
+_PRIME_SILENCE_SECONDS = 0.12
+_FADE_IN_SECONDS = 0.008
+
 _MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 _VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
@@ -82,6 +88,16 @@ def _split_sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_BOUNDARY.split(text.strip()) if part.strip()]
 
 
+def _fade_in(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Ramp the opening samples up from zero so playback doesn't begin with a click."""
+    ramp_len = min(len(samples), int(sample_rate * _FADE_IN_SECONDS))
+    if ramp_len <= 0:
+        return samples
+    faded = np.array(samples, dtype="float32", copy=True)
+    faded[:ramp_len] *= np.linspace(0.0, 1.0, ramp_len, dtype="float32")
+    return faded
+
+
 class Stackvox:
     """Reusable TTS engine. Load the model once, speak many times.
 
@@ -104,6 +120,8 @@ class Stackvox:
         self._kokoro = Kokoro(str(model_path), str(voices_path))
         self._stop_event = threading.Event()
         self._play_thread: threading.Thread | None = None
+        self._stream: sd.OutputStream | None = None
+        self._stream_lock = threading.Lock()
 
     def synthesize(
         self,
@@ -210,6 +228,7 @@ class Stackvox:
         producer = threading.Thread(target=_produce, daemon=True, name="stackvox-synth")
         producer.start()
         error: Exception | None = None
+        stream: sd.OutputStream | None = None
         try:
             while not stop_event.is_set():
                 item = chunks.get()
@@ -219,9 +238,36 @@ class Stackvox:
                     error = item
                     break
                 samples, sample_rate = item
-                sd.play(samples, sample_rate)
-                sd.wait()
+                samples = np.ascontiguousarray(samples, dtype="float32")
+                if stream is None:
+                    # One stream for the whole utterance: writing chunks into it is
+                    # gapless and avoids the per-sentence open/close that crackles at
+                    # the start. Prime with silence so device warm-up (e.g. a
+                    # Bluetooth codec switch) lands before the first word, and fade
+                    # the opening samples in to avoid an onset click.
+                    stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+                    stream.start()
+                    with self._stream_lock:
+                        self._stream = stream
+                    prime = int(sample_rate * _PRIME_SILENCE_SECONDS)
+                    if prime > 0:
+                        stream.write(np.zeros(prime, dtype="float32"))
+                    samples = _fade_in(samples, sample_rate)
+                try:
+                    stream.write(samples)
+                except Exception:
+                    if stop_event.is_set():
+                        break  # aborted by stop(); expected
+                    raise
         finally:
+            with self._stream_lock:
+                self._stream = None
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    logger.debug("stream teardown failed", exc_info=True)
             # Stop the producer and keep draining so it can never stay parked on
             # a full queue — that's what guarantees the synth thread always exits.
             stop_event.set()
@@ -236,6 +282,12 @@ class Stackvox:
     def stop(self) -> None:
         """Stop any in-progress playback started with blocking=False."""
         self._stop_event.set()
+        with self._stream_lock:
+            if self._stream is not None:
+                try:
+                    self._stream.abort()
+                except Exception:
+                    logger.debug("stream abort failed", exc_info=True)
         sd.stop()
 
     def voices(self) -> list[str]:
