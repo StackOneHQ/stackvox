@@ -35,7 +35,8 @@ def fake_kokoro(mocker, fake_ensure_models):
 
 @pytest.fixture
 def fake_audio(mocker):
-    """Mock the sounddevice surface used by Stackvox."""
+    """Mock the sounddevice surface used by Stackvox (streaming + speak_sequence)."""
+    mocker.patch.object(engine.sd, "OutputStream")
     mocker.patch.object(engine.sd, "play")
     mocker.patch.object(engine.sd, "wait")
     mocker.patch.object(engine.sd, "stop")
@@ -105,15 +106,35 @@ class TestSpeak:
 
         engine.Stackvox().speak("One sentence. Two sentence. Three here.")
 
-        # One synth + play cycle per sentence — that's what enables early audio.
+        # One synth per sentence (early audio), all streamed through a single
+        # output stream: a prime-silence write plus one write per sentence.
         assert fake_kokoro.return_value.create.call_count == 3
-        assert engine.sd.play.call_count == 3
-        assert engine.sd.wait.call_count == 3
+        engine.sd.OutputStream.assert_called_once()
+        stream = engine.sd.OutputStream.return_value
+        assert stream.write.call_count == 4  # 1 prime + 3 sentences
+        stream.close.assert_called_once()
 
     def test_single_sentence_plays_once(self, fake_kokoro, fake_audio):
         fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
         engine.Stackvox().speak("Just one sentence with no terminal punctuation")
-        assert engine.sd.play.call_count == 1
+        engine.sd.OutputStream.assert_called_once()
+        assert engine.sd.OutputStream.return_value.write.call_count == 2  # prime + 1 sentence
+
+    def test_primes_with_silence_before_first_audio(self, fake_kokoro, fake_audio):
+        # The lead-in silence lets the output device (e.g. Bluetooth) warm up
+        # before the first word, rather than crackling into it.
+        fake_kokoro.return_value.create.return_value = (np.ones(10, dtype=np.float32), 24000)
+        engine.Stackvox().speak("hello")
+        prime = engine.sd.OutputStream.return_value.write.call_args_list[0].args[0]
+        assert not prime.any()
+        assert len(prime) == int(24000 * engine._PRIME_SILENCE_SECONDS)
+
+    def test_first_audio_fades_in_from_zero(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.ones(1000, dtype=np.float32), 24000)
+        engine.Stackvox().speak("hello")
+        first_audio = engine.sd.OutputStream.return_value.write.call_args_list[1].args[0]
+        assert first_audio[0] == 0.0  # ramp starts at silence
+        assert first_audio[-1] == 1.0  # ramp completes, body untouched
 
     def test_non_blocking_plays_in_background_thread(self, fake_kokoro, fake_audio):
         fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
@@ -123,7 +144,7 @@ class TestSpeak:
 
         assert tts._play_thread is not None
         tts._play_thread.join(timeout=5)
-        engine.sd.play.assert_called()
+        engine.sd.OutputStream.assert_called()
 
     def test_passes_engine_defaults_to_synthesis(self, fake_kokoro, fake_audio):
         fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
@@ -177,7 +198,7 @@ class TestSpeak:
         tts = engine.Stackvox()
         tts.stop()
         tts.speak("hello world")
-        engine.sd.play.assert_called()
+        engine.sd.OutputStream.assert_called()
 
 
 class TestSplitSentences:
