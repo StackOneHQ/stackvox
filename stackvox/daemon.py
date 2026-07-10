@@ -222,6 +222,10 @@ class _Handler(socketserver.StreamRequestHandler):
             self.wfile.write(b"ok\n")
             return
 
+        if command == "version":
+            self.wfile.write(f"{updates._current_version()}\n".encode())
+            return
+
         if command == "stop":
             self.wfile.write(b"ok\n")
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -343,3 +347,14 @@ def stop() -> tuple[bool, str]:
 
 def ping() -> tuple[bool, str]:
     return send({"command": "ping"}, timeout=PING_TIMEOUT_SECONDS)
+
+
+def version(timeout: float = PING_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """(got_version, version_or_error) reported by the running daemon.
+
+    The running daemon can differ from the installed package if it wasn't
+    restarted after an upgrade, so this reports what is actually serving — not
+    what's on disk. A version reply starts with a digit; error strings don't.
+    """
+    _, resp = send({"command": "version"}, timeout=timeout)
+    return resp[:1].isdigit(), resp
