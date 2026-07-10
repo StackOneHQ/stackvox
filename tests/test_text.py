@@ -10,6 +10,7 @@ from stackvox.text import (
     shape_pauses,
     strip_emoji,
     strip_thousands_separators,
+    versions_to_words,
 )
 
 # --- numbers ---------------------------------------------------------------
@@ -26,6 +27,31 @@ def test_decimals_spoken_digit_by_digit():
 
 def test_year_is_not_a_decimal():
     assert decimals_to_words("built in 2023") == "built in 2023"
+
+
+def test_semver_all_parts_spoken():
+    assert versions_to_words("0.7.0") == "0 point 7 point 0"
+    assert versions_to_words("1.2.3") == "1 point 2 point 3"
+
+
+def test_semver_multi_digit_component():
+    assert versions_to_words("1.20.3") == "1 point 20 point 3"
+
+
+def test_version_preserves_trailing_sentence_stop():
+    assert versions_to_words("upgrade to 1.2.3.") == "upgrade to 1 point 2 point 3."
+
+
+def test_two_part_number_is_left_for_the_decimal_pass():
+    # Only two components — an ordinary decimal, not a version.
+    assert versions_to_words("3.14") == "3.14"
+    assert decimals_to_words(versions_to_words("3.14")) == "3 point 1 4"
+
+
+def test_semver_normalizes_end_to_end():
+    out = normalize_for_speech("Upgraded to 0.7.0 today.", markdown=False)
+    assert "0 point 7 point 0" in out
+    assert "0 point 7.0" not in out
 
 
 # --- units -----------------------------------------------------------------
