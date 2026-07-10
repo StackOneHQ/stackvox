@@ -18,6 +18,7 @@ __all__ = [
     "markdown_to_paragraphs",
     "strip_emoji",
     "strip_thousands_separators",
+    "versions_to_words",
     "decimals_to_words",
     "expand_units",
     "apply_pronunciations",
@@ -82,6 +83,21 @@ def expand_units(text: str, locale: str = DEFAULT_LOCALE) -> str:
 def strip_thousands_separators(text: str) -> str:
     """1,198.9 -> 1198.9 (so the whole number is read as one, not split)."""
     return re.sub(r"(?<=\d),(?=\d)", "", text)
+
+
+_VERSION = re.compile(r"(?<!\d)\d+(?:\.\d+){2,}(?!\d)")
+
+
+def versions_to_words(text: str) -> str:
+    """1.2.3 -> "1 point 2 point 3"; 0.7.0 -> "0 point 7 point 0".
+
+    A dotted version string has more than one decimal point, which
+    `decimals_to_words` can't handle — it splits only the first, leaving a stray
+    full stop mid-number ("0.7.0" -> "0 point 7.0"). Run this before it. Two-part
+    numbers are left untouched so ordinary decimals still read digit-by-digit,
+    and a trailing sentence stop (``upgrade to 1.2.3.``) is preserved.
+    """
+    return _VERSION.sub(lambda m: m.group(0).replace(".", " point "), text)
 
 
 def decimals_to_words(text: str) -> str:
@@ -287,6 +303,7 @@ def _shape_paragraph(
     if expand_units_flag:  # units BEFORE decimals (see note above)
         text = expand_units(text, locale)
     if expand_numbers_flag:
+        text = versions_to_words(text)  # multi-dot versions BEFORE the decimal split
         text = decimals_to_words(text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
