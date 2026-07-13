@@ -169,3 +169,11 @@ def test_send_helper_when_daemon_not_running(tmp_path, monkeypatch):
     ok, resp = daemon.send({"command": "ping"})
     assert not ok
     assert resp == "daemon not running"
+
+
+def test_cancel_stops_playback_and_keeps_daemon_up(server: ServerHarness):
+    reply = _roundtrip(server.sock, json.dumps({"command": "cancel"}) + "\n")
+    assert reply == "ok"
+    server.tts.stop.assert_called()  # current utterance aborted
+    # unlike `stop`, the daemon stays up
+    assert _roundtrip(server.sock, json.dumps({"command": "ping"}) + "\n") == "ok"

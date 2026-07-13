@@ -5,8 +5,10 @@ Protocol: one JSON object per connection (line-terminated), reply is a status li
 
 Request shapes:
     {"text": "...", "voice": "af_sarah", "speed": 1.0, "lang": "en-us"}
-    {"command": "stop"}
+    {"command": "stop"}     # shut the daemon down
+    {"command": "cancel"}   # stop the current utterance, keep the daemon up
     {"command": "ping"}
+    {"command": "version"}
 
 Replies: "ok", "busy", "err: <msg>".
 """
@@ -203,6 +205,17 @@ class _DaemonState:
     def shutdown(self) -> None:
         self.stop_event.set()
 
+    def cancel(self) -> None:
+        """Stop the current utterance and drop anything queued, without shutting
+        the daemon down. Drains the queue first so the worker can't immediately
+        pick up a pending item, then aborts the in-flight playback."""
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break
+        self.tts.stop()
+
 
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
@@ -229,6 +242,11 @@ class _Handler(socketserver.StreamRequestHandler):
         if command == "stop":
             self.wfile.write(b"ok\n")
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
+        if command == "cancel":
+            state.cancel()
+            self.wfile.write(b"ok\n")
             return
 
         text = req.get("text")
@@ -343,6 +361,12 @@ def say(
 
 def stop() -> tuple[bool, str]:
     return send({"command": "stop"})
+
+
+def cancel() -> tuple[bool, str]:
+    """Stop the daemon's current utterance (and drop the queue) without shutting
+    it down."""
+    return send({"command": "cancel"})
 
 
 def ping() -> tuple[bool, str]:
