@@ -133,14 +133,15 @@ _DEV_PRONUNCIATIONS: dict[str, str] = {
     "cli": "C L I",
     "ci": "C I",
     "ide": "I D E",
-    "aws": "A W S",
+    "aws": "A.W.S.",  # dotted: espeak reads a lone "A" as the article "uh"; dots force the letter name "ay"
     "uri": "U R I",
-    "iam": "I A M",
+    "iam": "I.A.M.",  # ditto — the middle "A" needs the dot
     "saas": "sass",
     "paas": "pass",
     "tui": "T U I",
     "postgresql": "postgres",
     "kubectl": "kube control",
+    "stackone": "stack one",  # org name espeak garbles as "stac kone"
 }
 
 

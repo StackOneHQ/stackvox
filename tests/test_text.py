@@ -226,9 +226,15 @@ def test_plain_text_mode_splits_paragraphs():
 def test_dev_acronyms_are_spelled_out():
     assert normalize_for_speech("Use the CLI.", markdown=False) == "Use the C L I."
     assert "C L I" in normalize_for_speech("the cli tool", markdown=False)  # lowercase too
-    assert "A W S" in normalize_for_speech("deploy to AWS", markdown=False)
+    assert "A.W.S." in normalize_for_speech("deploy to AWS", markdown=False)  # dotted → "ay"
+    assert "I.A.M." in normalize_for_speech("set up IAM", markdown=False)
     assert "U R I" in normalize_for_speech("parse the URI", markdown=False)
     assert "C I C D" in normalize_for_speech("the CI/CD pipeline", markdown=False)
+
+
+def test_org_names_are_spoken_word_by_word():
+    assert "stack one" in normalize_for_speech("deployed to StackOne today", markdown=False)
+    assert "stack one" in normalize_for_speech("the stackone api", markdown=False)  # case-insensitive
 
 
 def test_dev_terms_leave_correctly_voiced_acronyms_alone():
