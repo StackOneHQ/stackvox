@@ -523,3 +523,17 @@ class TestNormalizeParsing:
         mocker.patch.object(cli.sys, "argv", ["stackvox", "paths"])
         assert cli.main() == 0
         assert paths_handler.called
+
+
+class TestCmdCancel:
+    def test_running_calls_daemon_cancel(self, mocker):
+        mocker.patch.object(cli.daemon, "is_running", return_value=True)
+        cancel = mocker.patch.object(cli.daemon, "cancel", return_value=(True, "ok"))
+        assert cli._cmd_cancel(_ns()) == 0
+        cancel.assert_called_once()
+
+    def test_no_daemon_is_a_noop(self, mocker):
+        mocker.patch.object(cli.daemon, "is_running", return_value=False)
+        cancel = mocker.patch.object(cli.daemon, "cancel")
+        assert cli._cmd_cancel(_ns()) == 0
+        cancel.assert_not_called()

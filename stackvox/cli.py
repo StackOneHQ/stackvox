@@ -26,6 +26,7 @@ def _configure_logging() -> None:
 SUBCOMMANDS = {
     "serve",
     "stop",
+    "cancel",
     "status",
     "say",
     "speak",
@@ -51,7 +52,7 @@ _stackvox_completion() {
     subcommand="${COMP_WORDS[1]:-}"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "speak say normalize serve stop status voices welcome paths config completion install-helper" -- "$cur") )
+        COMPREPLY=( $(compgen -W "speak say normalize serve stop cancel status voices welcome paths config completion install-helper" -- "$cur") )
         return 0
     fi
 
@@ -155,6 +156,7 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
     _add_voice_args(p_serve, defaults)
 
     sub.add_parser("stop", help="Stop the running daemon")
+    sub.add_parser("cancel", help="Stop the current utterance without shutting down the daemon")
     sub.add_parser("status", help="Print daemon status")
     sub.add_parser("voices", help="List available voices")
     sub.add_parser("welcome", help="Play a multilingual welcome message")
@@ -388,6 +390,15 @@ def _cmd_stop(_: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_cancel(_: argparse.Namespace) -> int:
+    # Interrupt the current utterance but leave the daemon running (no model
+    # reload). Nothing playing / no daemon is not an error.
+    if not daemon.is_running():
+        return 0
+    ok, _resp = daemon.cancel()
+    return 0 if ok else 1
+
+
 def _cmd_status(_: argparse.Namespace) -> int:
     installed = updates._current_version()
     if daemon.is_running():
@@ -530,6 +541,7 @@ def main() -> int:
         "normalize": _cmd_normalize,
         "serve": _cmd_serve,
         "stop": _cmd_stop,
+        "cancel": _cmd_cancel,
         "status": _cmd_status,
         "voices": _cmd_voices,
         "welcome": _cmd_welcome,
