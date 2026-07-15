@@ -20,6 +20,7 @@ __all__ = [
     "strip_thousands_separators",
     "versions_to_words",
     "decimals_to_words",
+    "speak_file_refs",
     "expand_units",
     "apply_pronunciations",
     "shape_pauses",
@@ -108,6 +109,46 @@ def decimals_to_words(text: str) -> str:
         lambda m: m.group(1) + " point " + " ".join(m.group(2)),
         text,
     )
+
+
+# --------------------------------------------------------------------------- #
+# File & line references                                                      #
+# --------------------------------------------------------------------------- #
+# `engine.py:42` reads as "…dot py colon forty two" — the dots and colon get
+# voiced literally. Spoken aloud the line number is the signal and the filename
+# is noise, so lead with "line N of <file>" (how a person actually says it) and
+# soften the path: drop directories to the basename, and voice the dotted name
+# word by word.
+
+_FILE_REF = re.compile(
+    r"(?<!\w)"
+    r"(?:[\w.-]*/)*"  # optional directory segments (dropped — "src/" reads as "slash")
+    r"([A-Za-z0-9_-]+(?:\.[A-Za-z][\w-]*)+)"  # filename with >=1 letter-initial extension
+    r":(\d+)(?:-(\d+))?(?::(\d+))?"  # :line, optional -end (range) or :column
+    r"(?!\w)"
+)
+
+
+def speak_file_refs(text: str) -> str:
+    """Turn ``path/file.ext:line`` refs into spoken "line N of file ext".
+
+    ``engine.py:42`` -> "line 42 of engine py"; ``cli.py:100-118`` -> "lines 100
+    to 118 of cli py"; ``foo.ts:666:10`` -> "line 666, column 10 of foo ts". The
+    ``:line`` suffix is the trigger, so bare times/ratios/verses (``12:30``,
+    ``3:1``, ``John 3:16``) and dotted versions (``1.2.3``) are left untouched —
+    none of them carry a dotted-filename before the colon.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        basename = match.group(1).replace(".", " ")
+        start, end, column = match.group(2), match.group(3), match.group(4)
+        if end:
+            location = f"lines {start} to {end}"
+        else:
+            location = f"line {start}" + (f", column {column}" if column else "")
+        return f"{location} of {basename}"
+
+    return _FILE_REF.sub(repl, text)
 
 
 # --------------------------------------------------------------------------- #
@@ -290,11 +331,17 @@ def _shape_paragraph(
     text: str,
     *,
     pronunciations: dict[str, str] | None,
+    dev_terms_flag: bool,
     expand_units_flag: bool,
     expand_numbers_flag: bool,
     pauses_flag: bool,
     locale: str,
 ) -> str:
+    # File refs first: it consumes the ":line" digits (so the number stages see a
+    # plain "line 42", not a decimal) and forms the spoken basename before the
+    # dev-term dict runs over it.
+    if dev_terms_flag:
+        text = speak_file_refs(text)
     if expand_numbers_flag:
         text = strip_thousands_separators(text)
     if pauses_flag:
@@ -345,6 +392,7 @@ def normalize_for_speech(
         shaped = _shape_paragraph(
             para,
             pronunciations=effective_pronunciations,
+            dev_terms_flag=dev_terms,
             expand_units_flag=expand_units_flag,
             expand_numbers_flag=expand_numbers_flag,
             pauses_flag=pauses,

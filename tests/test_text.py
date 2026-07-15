@@ -8,6 +8,7 @@ from stackvox.text import (
     markdown_to_paragraphs,
     normalize_for_speech,
     shape_pauses,
+    speak_file_refs,
     strip_emoji,
     strip_thousands_separators,
     versions_to_words,
@@ -52,6 +53,44 @@ def test_semver_normalizes_end_to_end():
     out = normalize_for_speech("Upgraded to 0.7.0 today.", markdown=False)
     assert "0 point 7 point 0" in out
     assert "0 point 7.0" not in out
+
+
+# --- file & line references ------------------------------------------------
+
+
+def test_file_ref_leads_with_line_then_file():
+    assert speak_file_refs("unifiedAPIv2.service.ts:666") == "line 666 of unifiedAPIv2 service ts"
+
+
+def test_file_ref_drops_directories_to_basename():
+    assert speak_file_refs("Open /abs/path/to/module.py:7.") == "Open line 7 of module py."
+
+
+def test_file_ref_line_range():
+    assert speak_file_refs("cli.py:100-118") == "lines 100 to 118 of cli py"
+
+
+def test_file_ref_line_and_column():
+    assert speak_file_refs("foo.ts:666:10") == "line 666, column 10 of foo ts"
+
+
+def test_file_ref_leaves_times_ratios_verses_untouched():
+    text = "Meet at 12:30, the ratio was 3:1, see John 3:16."
+    assert speak_file_refs(text) == text
+
+
+def test_file_ref_leaves_dotted_versions_untouched():
+    assert speak_file_refs("bump to 1.2.3 and 0.7.0") == "bump to 1.2.3 and 0.7.0"
+
+
+def test_file_ref_normalizes_end_to_end():
+    out = normalize_for_speech("See `engine.py:42` for the fix.", markdown=True)
+    assert out == "See line 42 of engine py for the fix."
+
+
+def test_file_ref_disabled_with_dev_terms():
+    out = normalize_for_speech("See engine.py:42.", markdown=False, dev_terms=False)
+    assert out == "See engine.py:42."
 
 
 # --- units -----------------------------------------------------------------
