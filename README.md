@@ -69,9 +69,11 @@ stackvox speak --normalize --file post.md       # normalize, then synthesize
 stackvox say   --normalize "**Shipped** 1,198.9 MPG"   # normalize, then send to daemon
 ```
 
-`--normalize` is off by default on `speak`/`say`, so notification phrases synthesize exactly as before. The tuning flags mirror the library defaults (all on except emoji-strip): `--no-markdown`, `--no-dev-terms`, `--no-expand-units`, `--no-expand-numbers`, `--no-pauses`, `--tables {drop,csv}`, `--strip-emoji`, `--no-terminal-stops`, `--locale`, and a `--pronunciations FILE` (a JSON `{"written": "spoken"}` map, applied whole-word and case-insensitively).
+`--normalize` is off by default on `speak`/`say`, so notification phrases synthesize exactly as before. The tuning flags mirror the library defaults (all on except emoji-strip): `--no-markdown`, `--no-dev-terms`, `--no-expand-units`, `--no-expand-numbers`, `--no-pauses`, `--tables {drop,csv}`, `--code-blocks {drop,placeholder}`, `--strip-emoji`, `--no-terminal-stops`, `--locale`, and a `--pronunciations FILE` (a JSON `{"written": "spoken"}` map, applied whole-word and case-insensitively).
 
 **Dev-output handling** (on by default; `--no-dev-terms` to disable) covers two things espeak reads badly: acronyms it says as words (`CLI` → "C L I", `AWS`, `URI`, `IAM`, …) and file-line references, which it voices literally as "dot py colon". A `file.ext:line` ref is re-spoken lead-with-the-line: `engine.py:42` → "line 42 of engine py", `cli.py:100-118` → "lines 100 to 118 of cli py", `foo.ts:666:10` → "line 666, column 10 of foo ts". Times, ratios, and versions (`12:30`, `3:1`, `1.2.3`) are left alone.
+
+Fenced code blocks are dropped by default. `--code-blocks placeholder` instead speaks a short stand-in so a skipped block doesn't sound disjointed (ChatGPT-style) — set the wording with `--code-placeholder` (e.g. `--code-blocks placeholder --code-placeholder "you can see the code in the chat history"`); consecutive blocks collapse to one.
 
 Bash completion:
 

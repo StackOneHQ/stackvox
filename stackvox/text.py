@@ -230,11 +230,24 @@ def _strip_md_inline(line: str) -> str:
     return line
 
 
-def markdown_to_paragraphs(text: str, *, tables: str = "drop", strip_emoji_flag: bool = False) -> list[str]:
+def markdown_to_paragraphs(
+    text: str,
+    *,
+    tables: str = "drop",
+    strip_emoji_flag: bool = False,
+    code_blocks: str = "drop",
+    code_placeholder: str = "",
+) -> list[str]:
     """Reduce Markdown to a list of speakable paragraphs. Headings and list
     items become their own paragraphs (so each gets its own pause). Tables are
-    dropped or rendered comma-separated per ``tables``."""
-    text = re.sub(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", "\n", text)  # fenced code
+    dropped or rendered comma-separated per ``tables``. Fenced code blocks are
+    dropped, or (``code_blocks="placeholder"``) replaced with a spoken
+    ``code_placeholder`` so a silently-skipped block doesn't sound disjointed."""
+    speak_code = code_blocks == "placeholder" and bool(code_placeholder)
+    # A function replacement keeps the placeholder literal (no backref parsing);
+    # blank lines around it make it a standalone paragraph.
+    fenced = f"\n\n{code_placeholder}\n\n" if speak_code else "\n"
+    text = re.sub(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$", lambda _: fenced, text)  # fenced code
     text = re.sub(r"```+|~~~+", " ", text)  # stray fences
     if strip_emoji_flag:
         text = strip_emoji(text)
@@ -319,6 +332,14 @@ def markdown_to_paragraphs(text: str, *, tables: str = "drop", strip_emoji_flag:
             flush()
 
     flush()
+
+    if speak_code:  # collapse runs of adjacent code blocks into one placeholder
+        collapsed: list[str] = []
+        for para in paragraphs:
+            if para == code_placeholder and collapsed and collapsed[-1] == code_placeholder:
+                continue
+            collapsed.append(para)
+        return collapsed
     return paragraphs
 
 
@@ -366,6 +387,8 @@ def normalize_for_speech(
     expand_numbers: bool = True,
     pauses: bool = True,
     tables: str = "drop",
+    code_blocks: str = "drop",
+    code_placeholder: str = "Code block.",
     strip_emoji: bool = False,
     terminal_stops: bool = True,
     locale: str = DEFAULT_LOCALE,
@@ -380,7 +403,13 @@ def normalize_for_speech(
         effective_pronunciations[written.lower()] = spoken
 
     if markdown:
-        paragraphs = markdown_to_paragraphs(text, tables=tables, strip_emoji_flag=strip_emoji)
+        paragraphs = markdown_to_paragraphs(
+            text,
+            tables=tables,
+            strip_emoji_flag=strip_emoji,
+            code_blocks=code_blocks,
+            code_placeholder=code_placeholder,
+        )
     else:
         # `strip_emoji` (the bool kwarg) shadows the module function here, so
         # reach for the underlying pattern directly.

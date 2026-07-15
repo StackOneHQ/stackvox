@@ -175,6 +175,29 @@ def test_fenced_code_dropped():
     assert markdown_to_paragraphs(md) == ["Before.", "After."]
 
 
+def test_fenced_code_replaced_with_placeholder():
+    md = "Before.\n\n```py\nprint('hi')\n```\n\nAfter."
+    actual = markdown_to_paragraphs(md, code_blocks="placeholder", code_placeholder="see the code")
+    assert actual == ["Before.", "see the code", "After."]
+
+
+def test_consecutive_code_blocks_collapse_to_one_placeholder():
+    md = "```py\na\n```\n\n```py\nb\n```"
+    actual = markdown_to_paragraphs(md, code_blocks="placeholder", code_placeholder="see the code")
+    assert actual == ["see the code"]
+
+
+def test_code_placeholder_spoken_end_to_end():
+    md = "Here is how:\n\n```py\nx = 1\n```\n\nDone."
+    out = normalize_for_speech(md, code_blocks="placeholder", code_placeholder="see the chat history")
+    assert out == "Here is how:\nsee the chat history.\nDone."
+
+
+def test_code_blocks_dropped_by_default_end_to_end():
+    md = "Here is how:\n\n```py\nx = 1\n```\n\nDone."
+    assert normalize_for_speech(md) == "Here is how:\nDone."
+
+
 def test_tables_dropped_by_default():
     md = "| A | B |\n| --- | --- |\n| 1 | 2 |"
     assert markdown_to_paragraphs(md) == []
