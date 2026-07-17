@@ -77,13 +77,17 @@ _stackvox_completion() {
             COMPREPLY=( $(compgen -W "drop csv" -- "$cur") )
             return 0
             ;;
+        --code-blocks)
+            COMPREPLY=( $(compgen -W "drop placeholder" -- "$cur") )
+            return 0
+            ;;
         --locale)
             COMPREPLY=( $(compgen -W "en-GB" -- "$cur") )
             return 0
             ;;
     esac
 
-    local norm_flags="--no-markdown --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --strip-emoji --no-terminal-stops --locale"
+    local norm_flags="--no-markdown --no-dev-terms --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
 
     case "$subcommand" in
         speak)
@@ -241,6 +245,19 @@ def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -
         help="How Markdown tables are voiced (default: drop)",
     )
     parser.add_argument(
+        "--code-blocks",
+        dest="code_blocks",
+        choices=["drop", "placeholder"],
+        default="drop",
+        help="How fenced code blocks are voiced (default: drop)",
+    )
+    parser.add_argument(
+        "--code-placeholder",
+        dest="code_placeholder",
+        default="Code block.",
+        help='Spoken stand-in for a code block when --code-blocks placeholder (default: "Code block.")',
+    )
+    parser.add_argument(
         "--strip-emoji", dest="strip_emoji", action="store_true", help="Remove emoji before speaking"
     )
     parser.add_argument(
@@ -281,6 +298,8 @@ def _normalize_kwargs(args: argparse.Namespace) -> dict:
         "expand_numbers": args.expand_numbers,
         "pauses": args.pauses,
         "tables": args.tables,
+        "code_blocks": args.code_blocks,
+        "code_placeholder": args.code_placeholder,
         "strip_emoji": args.strip_emoji,
         "terminal_stops": args.terminal_stops,
         "locale": args.locale,

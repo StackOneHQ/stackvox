@@ -133,6 +133,8 @@ def _norm_ns(text=None, file=None, **overrides):
         expand_numbers=True,
         pauses=True,
         tables="drop",
+        code_blocks="drop",
+        code_placeholder="Code block.",
         strip_emoji=False,
         terminal_stops=True,
         locale="en-GB",
@@ -523,6 +525,26 @@ class TestNormalizeParsing:
         mocker.patch.object(cli.sys, "argv", ["stackvox", "paths"])
         assert cli.main() == 0
         assert paths_handler.called
+
+    def test_code_block_flags_parse(self, mocker):
+        norm = mocker.patch.object(cli, "_cmd_normalize", return_value=0)
+        mocker.patch.object(
+            cli.sys,
+            "argv",
+            [
+                "stackvox",
+                "normalize",
+                "--code-blocks",
+                "placeholder",
+                "--code-placeholder",
+                "see the chat",
+                "hi",
+            ],
+        )
+        assert cli.main() == 0
+        args = norm.call_args.args[0]
+        assert args.code_blocks == "placeholder"
+        assert args.code_placeholder == "see the chat"
 
 
 class TestCmdCancel:
