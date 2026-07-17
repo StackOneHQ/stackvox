@@ -65,6 +65,7 @@ _UNIT_RULES: dict[str, list[tuple[str, str]]] = {
         (r"\s*÷\s*", " divided by "),
         (r"\s*×\s*", " times "),
         (r"\s*=\s*", " equals "),
+        (r"~\s*(?=\d)", "about "),  # ~123 -> "about 123" (else espeak says "tilde 123"); leaves ~/path alone
     ],
 }
 DEFAULT_LOCALE = "en-GB"
@@ -183,6 +184,13 @@ _DEV_PRONUNCIATIONS: dict[str, str] = {
     "postgresql": "postgres",
     "kubectl": "kube control",
     "stackone": "stack one",  # org name espeak garbles as "stac kone"
+    # "dedupe" glued reads as "de-dup" (short u); split + long "dee" gives "dee doop".
+    # Inflections listed explicitly — apply_pronunciations matches whole words only.
+    "dedupe": "dee dupe",
+    "deduped": "dee duped",
+    "deduping": "dee duping",
+    "dedupes": "dee dupes",
+    "dedup": "dee dupe",
 }
 
 
