@@ -113,6 +113,20 @@ def test_math_symbols():
     assert expand_units("770 ÷ 2 × 3 = 5").strip() == "770 divided by 2 times 3 equals 5"
 
 
+def test_tilde_before_number_is_approximately():
+    assert expand_units("~123") == "about 123"
+    assert expand_units("~ 50 items") == "about 50 items"
+
+
+def test_tilde_not_before_number_is_left_alone():
+    # home dir / approx-equal — not an approximated quantity
+    assert expand_units("~/projects") == "~/projects"
+
+
+def test_tilde_approx_end_to_end_with_decimal():
+    assert normalize_for_speech("took ~1.5 hours", markdown=False) == "took about 1 point 5 hours."
+
+
 def test_unknown_locale_falls_back_to_en_gb():
     assert expand_units("£5", locale="xx-YY") == "5 pounds"
 
@@ -304,6 +318,18 @@ def test_dev_terms_leave_correctly_voiced_acronyms_alone():
     assert "JSON" in out
     assert "HTTP" in out
     assert "API" in out
+
+
+def test_dedupe_respelled_for_speech():
+    assert normalize_for_speech("dedupe the list", markdown=False) == "dee dupe the list."
+    # inflections and case
+    assert "dee duped" in normalize_for_speech("we Deduped it", markdown=False)
+    assert "dee duping" in normalize_for_speech("deduping now", markdown=False)
+
+
+def test_dedupe_does_not_touch_other_words():
+    # whole-word only — must not rewrite the middle of a longer token
+    assert "dee dupe" not in normalize_for_speech("dedupelicated", markdown=False)
 
 
 def test_dev_terms_can_be_disabled():
