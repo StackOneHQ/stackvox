@@ -61,6 +61,8 @@ Individual stages also exposed for composability (e.g. `expand_numbers(text)`,
 
 ### Pipeline order (order matters — encodes real bugs we hit)
 
+1. **Filenames** (if `filenames`): file refs, then bare filenames/paths (see below).
+1. **Versions** (if `expand_numbers`): range operators, pre-release suffixes, wildcards (see below).
 1. **Markdown** (if `markdown`): fenced/inline code, images, links→text, reference links, headings, blockquotes, horizontal rules, list markers, emphasis (leave lone `_` for snake_case), tables per `tables`.
 2. **Emoji** (if `strip_emoji`).
 3. **Numbers** (if `expand_numbers`): strip thousands commas (`1,198.9`→`1198.9`) *then* decimals→words (`1198.9`→`1198 point 9`).
@@ -71,6 +73,93 @@ Individual stages also exposed for composability (e.g. `expand_numbers(text)`,
 
 > Ordering note to preserve: **currency/unit expansion must precede the
 > decimal-point split**, or `£1.63` becomes `£1 point 63`. See `read-aloud.py`.
+
+### Semantic versions
+
+`versions_to_words` handles the dotted digits (`1.2.3` → "1 point 2 point 3").
+`speak_versions` handles everything else in a semver string, all of which espeak
+gets wrong:
+
+| Problem | espeak gives | We emit |
+|---|---|---|
+| pre-release glues to the core | `1.2.3-rc.1` → "…three-arsee-one" | `1.2.3, rc 1` |
+| `^`, `>`, `<` are **silent** | `^1.2.3` sounds identical to a pin | `compatible with 1.2.3` |
+| `>=` split by our own `=` rule | "equals 1.2.3", meaning inverted | `at least 1.2.3` |
+| wildcard dot is silent | `1.x` → "one ex" | `1 dot x` |
+
+Operators map semantically: `^`→"compatible with", `>=`→"at least",
+`<=`→"at most", `>`→"above", `<`→"below", `==`→"exactly", `!=`→"not equal to".
+`~` is left to `expand_units`, which already maps it to "about"; accidentally
+the right reading for a tilde range.
+
+Two guards worth keeping:
+
+- **Each operator requires a following digit**, which keeps the rules in version
+  context. The captured boundary character is re-emitted with a space, so glued
+  forms like pip's `requests>=2.0` and `arr[i]<5` don't fuse.
+- **A caret only counts at a token start.** `x^2` and `(a+b)^2` are
+  exponentiation, not caret ranges.
+
+> Ordering note to preserve: **`speak_versions` must run before `expand_units`**.
+> The `\s*=\s*` → " equals " rule would otherwise split `>=` into a bare `>`
+> (which espeak voices as *nothing*) plus "equals", so `>=1.2.3` came out as
+> "equals 1 point 2 point 3", the opposite of what it means.
+
+**Two-part versions are deliberately untouched.** `3.11` reads "3 point 1 1",
+not "3 point eleven", because a two-part version is indistinguishable from a
+real decimal where digit-by-digit is correct (`770.72` → "770 point 7 2").
+Fixing it needs a context heuristic, not a rule change.
+
+### Filenames and paths
+
+espeak already spells extensions correctly by itself — `.md` voices as "em dee",
+`.tf` as "tee eff", `.json` as "jason" — so these stages **leave the extension
+alone**. Respelling it would be redundant and would regress the cases espeak
+gets right. What espeak gets wrong is everything around the extension:
+
+| Problem | espeak gives | We emit |
+|---|---|---|
+| the dot is silent | `README.md` → "readmee-emdee" | `README dot md` |
+| hyphens are swallowed | `speech-normalization` → one word | `speech normalization` |
+| a leading dot is silent | `.github` → "github" | `dot github` |
+| `~/` glues | `~/x` → "tilde-slash x" | `home slash x` |
+| `.yml` → "immle" | `ci.yml` → "sigh immle" | `ci dot yaml` |
+
+Two stages, both gated on `filenames`:
+
+- `speak_file_refs` — needs a `:line` suffix. Emits `line N of <file> in <dirs>`:
+  the line number leads because spoken aloud it's the signal, and the directory
+  trails as a prepositional phrase, which is how a person says it.
+  `src/lib/cli.py:100-118` → "lines 100 to 118 of cli dot py in src slash lib".
+  The `:line` is the trigger, so times, ratios, verses (`12:30`, `John 3:16`)
+  and dotted versions (`1.2.3`) are untouched.
+- `speak_file_names` — no suffix needed. Emits the path in reading order:
+  `docs/speech-normalization.md` → "docs slash speech normalization dot md".
+
+**Refs run first**, because that stage rewrites its matches into prose with no
+dotted token left, so the two never fight over one reference.
+
+**The bare-name stage is gated on an extension allowlist** (`_FILE_EXTENSIONS`),
+not a general `word.word` rule. Prose is full of lookalikes espeak already reads
+correctly, and an allowlist excludes all of them for free: attribute access
+(`os.path.join`, `self.assertEqual`), abbreviations (`e.g.`, `i.e.`, `U.S.`) and
+domains (`example.com`, `claude.ai`). Two deliberate carve-outs:
+
+- **Single-letter extensions are absent** (`.c`, `.h`, `.r`) — they would rewrite
+  initials like `J.R.R` into "J dot R dot R". Those files keep espeak's existing
+  reading rather than risk a prose regression.
+- `_NOT_FILENAMES` holds dotted product names with real extensions — `Node.js`,
+  `Next.js` — which are read as one name, not as a file.
+
+> Ordering note to preserve: **the filename stages run first**. They consume the
+> `:line` digits before the number stages see them (else `:42` meets the decimal
+> split), and spacing the dot leaves the stem a standalone word — which is what
+> lets the dev-term dict still fix `cli.py` to "C L I dot py" instead of gluing
+> it into `C L I.py`.
+
+Own flag, `filenames`, deliberately **not** `dev_terms`: the acronym dict and
+filename handling are unrelated, and coupling them meant `--no-dev-terms`
+silently disabled file refs too.
 
 ## 4. CLI surface
 

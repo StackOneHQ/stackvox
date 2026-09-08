@@ -12,6 +12,7 @@ exposed for composition and testing. See ``docs/speech-normalization.md``.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 __all__ = [
     "normalize_for_speech",
@@ -19,8 +20,10 @@ __all__ = [
     "strip_emoji",
     "strip_thousands_separators",
     "versions_to_words",
+    "speak_versions",
     "decimals_to_words",
     "speak_file_refs",
+    "speak_file_names",
     "expand_units",
     "apply_pronunciations",
     "shape_pauses",
@@ -102,6 +105,81 @@ def versions_to_words(text: str) -> str:
     return _VERSION.sub(lambda m: m.group(0).replace(".", " point "), text)
 
 
+# --------------------------------------------------------------------------- #
+# Semantic versions                                                           #
+# --------------------------------------------------------------------------- #
+# `versions_to_words` handles the dotted digits. This handles everything else
+# in a semver string, all of which espeak gets wrong:
+#
+#   * a pre-release suffix GLUES to the core: "1.2.3-rc.1" voices as
+#     "one point two point three-arsee-one" (hyphen swallowed, suffix dot silent)
+#   * "^", ">" and "<" are SILENT, so "^1.2.3" is indistinguishable from a pin
+#   * ">=" is broken by our own `=` rule below, which splits it into "> equals",
+#     and a bare ">" voices as nothing, so ">=1.2.3" says "equals 1.2.3",
+#     inverting the meaning. espeak reads an intact ">=" correctly, so this stage
+#     must consume the operator BEFORE `expand_units` sees the "=".
+#   * "1.x" voices as "one ex" (dot silent)
+#
+# "~" is left to `expand_units`, which already maps it to "about"; accidentally
+# the right reading for a tilde range.
+
+# Longest operators first: ">=" must win before ">". Each requires a following
+# digit (optionally "v"-prefixed), which keeps the rules in version context and
+# off ordinary punctuation. The leading `(\S?)` captures whatever non-space
+# character precedes the operator and re-emits it with a space, so glued forms
+# like pip's "requests>=2.0" or "arr[i]<5" don't fuse into "requestsat least".
+_VERSION_OPERATORS: list[tuple[str, str]] = [
+    (r"(\S?)>=\s*(?=v?\d)", "at least "),
+    (r"(\S?)<=\s*(?=v?\d)", "at most "),
+    (r"(\S?)==\s*(?=v?\d)", "exactly "),
+    (r"(\S?)!=\s*(?=v?\d)", "not equal to "),
+    (r"(\S?)>\s*(?=v?\d)", "above "),
+    (r"(\S?)<\s*(?=v?\d)", "below "),
+]
+
+# "^" only at a token start: "x^2" and ")^2" are exponentiation, not a range.
+_CARET_RANGE = re.compile(r"(?<![\w)])\^\s*(?=v?\d)")
+
+# A dotted core (>=2 parts, so a bare "100" can't match) followed by a
+# "-prerelease" or "+build" suffix.
+_VERSION_SUFFIX = re.compile(r"(?<![\w.])(v?\d+(?:\.\d+){1,3})([-+][0-9A-Za-z][0-9A-Za-z.-]*)(?![\w])")
+
+# Wildcard versions: "1.x", "2.*", "1.2.X".
+_VERSION_WILDCARD = re.compile(r"(?<![\w.])(v?\d+(?:\.\d+)*)\.([xX*])(?![\w])")
+
+
+def _operator_repl(spoken: str) -> Callable[[re.Match[str]], str]:
+    """Replacement that re-emits the captured boundary character with a space."""
+
+    def repl(match: re.Match[str]) -> str:
+        boundary = match.group(1)
+        return f"{boundary} {spoken}" if boundary else spoken
+
+    return repl
+
+
+def speak_versions(text: str) -> str:
+    """Voice the non-numeric parts of a semantic version.
+
+    ``1.2.3-rc.1`` -> "1.2.3, rc 1"; ``>=1.2.3`` -> "at least 1.2.3";
+    ``^1.2.3`` -> "compatible with 1.2.3"; ``1.x`` -> "1 dot x". The dotted
+    digits are left for :func:`versions_to_words`, which runs later, so this
+    stage only unglues and names things espeak drops.
+
+    Must run BEFORE :func:`expand_units`, whose ``=`` rule would otherwise split
+    ``>=`` into a silent ``>`` plus "equals".
+    """
+    for pattern, words in _VERSION_OPERATORS:
+        text = re.sub(pattern, _operator_repl(words), text)
+    text = _CARET_RANGE.sub("compatible with ", text)
+    # Suffix: comma for a beat, then the tag's own dots and hyphens as spaces.
+    text = _VERSION_SUFFIX.sub(
+        lambda m: f"{m.group(1)}, {re.sub(r'[.-]', ' ', m.group(2)[1:])}",
+        text,
+    )
+    return _VERSION_WILDCARD.sub(r"\1 dot \2", text)
+
+
 def decimals_to_words(text: str) -> str:
     """1198.9 -> "1198 point 9"; 770.72 -> "770 point 7 2". Removes the bare
     "." between digits, which TTS can otherwise read as a full stop."""
@@ -113,43 +191,255 @@ def decimals_to_words(text: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# File & line references                                                      #
+# File & path references                                                      #
 # --------------------------------------------------------------------------- #
-# `engine.py:42` reads as "…dot py colon forty two" — the dots and colon get
-# voiced literally. Spoken aloud the line number is the signal and the filename
-# is noise, so lead with "line N of <file>" (how a person actually says it) and
-# soften the path: drop directories to the basename, and voice the dotted name
-# word by word.
+# espeak already spells extensions correctly on its own: ".md" voices as "em
+# dee", ".tf" as "tee eff", ".json" as "jason", so these stages deliberately
+# leave the extension alone. What espeak gets wrong is everything around it:
+#
+#   * the dot between stem and extension is SILENT ("README.md" -> "readmee-emdee")
+#   * a hyphen inside a name is swallowed ("speech-normalization" -> one word)
+#   * a leading dot is silent, so ".github" reads as "github"
+#   * "~/" glues into "tilde-slash"
+#   * ".yml" reads as "immle" (".yaml" is fine)
+#
+# So: voice the dot, space the hyphens, voice a leading dot, say "home" for "~",
+# and alias the one bad extension. Directory segments are spoken with "slash"
+# between them, which is how a person reads a path aloud.
+
+# Only these extensions mark a dotted token as a filename. An allowlist, not a
+# general "word.word" rule, because ordinary prose is full of lookalikes espeak
+# ALREADY voices correctly and which must not be touched: attribute access
+# (os.path.join, self.assertEqual), abbreviations (e.g., i.e., U.S.), and
+# domains (example.com, claude.ai) all fall outside it for free.
+# Single-letter extensions (.c, .h, .r) are deliberately absent: they would
+# rewrite initials like "J.R.R" into "J dot R dot R". Those files keep espeak's
+# existing reading rather than risk a prose regression.
+_FILE_EXTENSIONS = frozenset(
+    [
+        "py",
+        "pyi",
+        "pyx",
+        "ipynb",
+        "rb",
+        "rs",
+        "go",
+        "java",
+        "kt",
+        "kts",
+        "swift",
+        "cpp",
+        "hpp",
+        "cc",
+        "cxx",
+        "cs",
+        "php",
+        "lua",
+        "pl",
+        "scala",
+        "clj",
+        "cljs",
+        "ex",
+        "exs",
+        "erl",
+        "vim",
+        "el",
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "mjs",
+        "cjs",
+        "vue",
+        "svelte",
+        "astro",
+        "json",
+        "yaml",
+        "yml",
+        "toml",
+        "ini",
+        "cfg",
+        "conf",
+        "env",
+        "xml",
+        "csv",
+        "tsv",
+        "properties",
+        "lock",
+        "md",
+        "mdx",
+        "rst",
+        "txt",
+        "adoc",
+        "tex",
+        "html",
+        "htm",
+        "css",
+        "scss",
+        "sass",
+        "less",
+        "svg",
+        "tf",
+        "tfvars",
+        "tfstate",
+        "mk",
+        "cmake",
+        "gradle",
+        "bzl",
+        "proto",
+        "graphql",
+        "gql",
+        "sql",
+        "sh",
+        "bash",
+        "zsh",
+        "fish",
+        "ps1",
+        "bat",
+        "dockerfile",
+        "gitignore",
+        "editorconfig",
+        "npmrc",
+        "nvmrc",
+        "log",
+        "wav",
+        "mp3",
+        "pdf",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "zip",
+        "tar",
+        "gz",
+        "whl",
+    ]
+)
+
+# Extensions espeak mispronounces, mapped to a spelling it reads correctly.
+# ".yml" -> "immle"; the "yaml" spelling voices as "yaml".
+_EXTENSION_ALIASES: dict[str, str] = {"yml": "yaml"}
+
+# Dotted tokens that LOOK like "name.ext" with a real extension but are read as
+# a single product name. Compared lowercased against the whole matched token.
+_NOT_FILENAMES = frozenset({"node.js", "next.js", "nuxt.js", "vue.js", "ember.js", "backbone.js"})
+
+
+def _speak_segment(segment: str) -> str:
+    """Space out a hyphenated path segment: "speech-normalization" -> "speech
+    normalization". espeak swallows the hyphen and runs the halves together.
+    Underscores are left alone; espeak doesn't voice them."""
+    return segment.replace("-", " ")
+
+
+def _speak_basename(name: str) -> str:
+    """``speech-normalization.md`` -> "speech normalization dot md".
+
+    Every dot becomes a spoken "dot" (espeak drops it), hyphens become spaces,
+    and the final extension is run through the alias map. The extension itself
+    is otherwise untouched; espeak spells it correctly already.
+    """
+    segments = name.split(".")
+    segments[-1] = _EXTENSION_ALIASES.get(segments[-1].lower(), segments[-1])
+    return " dot ".join(_speak_segment(segment) for segment in segments)
+
+
+def _speak_dirs(path: str) -> str:
+    """``src/lib/`` -> "src slash lib"; ``~/.config/`` -> "home slash dot config".
+
+    A leading dot and a ``~`` are both mis-voiced by espeak (silent, and
+    "tilde-slash" respectively), so they're spelled out here.
+    """
+    spoken: list[str] = []
+    for segment in path.split("/"):
+        if not segment or segment == ".":
+            continue
+        if segment == "~":
+            spoken.append("home")
+        elif segment == "..":
+            spoken.append("dot dot")
+        elif segment.startswith("."):
+            spoken.append("dot " + _speak_segment(segment[1:]))
+        else:
+            spoken.append(_speak_segment(segment))
+    return " slash ".join(spoken)
+
+
+def _is_filename(basename: str) -> bool:
+    """True when the final dotted component is a known file extension."""
+    if basename.lower() in _NOT_FILENAMES:
+        return False
+    return basename.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS
+
+
+# Directory segments, captured. The inner segment allows empty, so an absolute
+# "/abs/path/" is consumed by the match rather than left stranded in the text.
+_DIRS = r"((?:[\w.~-]*/)*)"
+_BASENAME = r"([A-Za-z0-9_-]+(?:\.[A-Za-z][\w-]*)+)"  # name with >=1 letter-initial extension
 
 _FILE_REF = re.compile(
     r"(?<!\w)"
-    r"(?:[\w.-]*/)*"  # optional directory segments (dropped — "src/" reads as "slash")
-    r"([A-Za-z0-9_-]+(?:\.[A-Za-z][\w-]*)+)"  # filename with >=1 letter-initial extension
-    r":(\d+)(?:-(\d+))?(?::(\d+))?"  # :line, optional -end (range) or :column
-    r"(?!\w)"
+    + _DIRS
+    + _BASENAME
+    + r":(\d+)(?:-(\d+))?(?::(\d+))?"  # :line, optional -end (range) or :column
+    + r"(?!\w)"
 )
+
+# Same shape without the ":line" suffix. The trailing guard allows a following
+# "." so a sentence-final "See README.md." still matches.
+_FILE_NAME = re.compile(r"(?<![\w/~.-])" + _DIRS + _BASENAME + r"(?![\w-])")
 
 
 def speak_file_refs(text: str) -> str:
-    """Turn ``path/file.ext:line`` refs into spoken "line N of file ext".
+    """Turn ``path/file.ext:line`` refs into spoken "line N of file dot ext in path".
 
-    ``engine.py:42`` -> "line 42 of engine py"; ``cli.py:100-118`` -> "lines 100
-    to 118 of cli py"; ``foo.ts:666:10`` -> "line 666, column 10 of foo ts". The
-    ``:line`` suffix is the trigger, so bare times/ratios/verses (``12:30``,
-    ``3:1``, ``John 3:16``) and dotted versions (``1.2.3``) are left untouched —
+    ``engine.py:42`` -> "line 42 of engine dot py"; ``src/cli.py:100-118`` ->
+    "lines 100 to 118 of cli dot py in src"; ``foo.ts:666:10`` -> "line 666,
+    column 10 of foo dot ts". The line number leads because spoken aloud it's
+    the signal, and the directory trails as a prepositional phrase, which is how
+    a person says it.
+
+    The ``:line`` suffix is the trigger, so bare times/ratios/verses (``12:30``,
+    ``3:1``, ``John 3:16``) and dotted versions (``1.2.3``) are left untouched --
     none of them carry a dotted-filename before the colon.
     """
 
     def repl(match: re.Match[str]) -> str:
-        basename = match.group(1).replace(".", " ")
-        start, end, column = match.group(2), match.group(3), match.group(4)
+        dirs, basename = match.group(1), match.group(2)
+        start, end, column = match.group(3), match.group(4), match.group(5)
         if end:
             location = f"lines {start} to {end}"
         else:
             location = f"line {start}" + (f", column {column}" if column else "")
-        return f"{location} of {basename}"
+        spoken = f"{location} of {_speak_basename(basename)}"
+        directories = _speak_dirs(dirs)
+        return f"{spoken} in {directories}" if directories else spoken
 
     return _FILE_REF.sub(repl, text)
+
+
+def speak_file_names(text: str) -> str:
+    """Voice a bare filename or path, with no ``:line`` suffix needed.
+
+    ``README.md`` -> "README dot md"; ``docs/speech-normalization.md`` -> "docs
+    slash speech normalization dot md". Gated on a known extension
+    (:data:`_FILE_EXTENSIONS`), so prose lookalikes espeak already reads
+    correctly (``os.path.join``, ``e.g.``, ``example.com``) pass through.
+
+    Run this AFTER :func:`speak_file_refs`: that stage rewrites its own matches
+    into prose containing no dotted token, so the two never fight over one ref.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        dirs, basename = match.group(1), match.group(2)
+        if not _is_filename(basename):
+            return match.group(0)
+        spoken = _speak_basename(basename)
+        directories = _speak_dirs(dirs)
+        return f"{directories} slash {spoken}" if directories else spoken
+
+    return _FILE_NAME.sub(repl, text)
 
 
 # --------------------------------------------------------------------------- #
@@ -360,18 +650,24 @@ def _shape_paragraph(
     text: str,
     *,
     pronunciations: dict[str, str] | None,
-    dev_terms_flag: bool,
+    filenames_flag: bool,
     expand_units_flag: bool,
     expand_numbers_flag: bool,
     pauses_flag: bool,
     locale: str,
 ) -> str:
-    # File refs first: it consumes the ":line" digits (so the number stages see a
-    # plain "line 42", not a decimal) and forms the spoken basename before the
-    # dev-term dict runs over it.
-    if dev_terms_flag:
+    # Filenames first, for two reasons: the ref stage consumes the ":line" digits
+    # (so the number stages see a plain "line 42", not a decimal), and spacing the
+    # dot leaves the stem a standalone word, which is what lets the dev-term dict
+    # below still fix "cli" -> "C L I" without gluing it to the extension.
+    # Refs before bare names: the ref stage rewrites its matches into prose with
+    # no dotted token left, so the two never fight over the same reference.
+    if filenames_flag:
         text = speak_file_refs(text)
+        text = speak_file_names(text)
     if expand_numbers_flag:
+        # Version ranges before units: the "=" unit rule would split ">=".
+        text = speak_versions(text)
         text = strip_thousands_separators(text)
     if pauses_flag:
         text = shape_pauses(text)
@@ -391,6 +687,7 @@ def normalize_for_speech(
     markdown: bool = True,
     pronunciations: dict[str, str] | None = None,
     dev_terms: bool = True,
+    filenames: bool = True,
     expand_units: bool = True,
     expand_numbers: bool = True,
     pauses: bool = True,
@@ -429,7 +726,7 @@ def normalize_for_speech(
         shaped = _shape_paragraph(
             para,
             pronunciations=effective_pronunciations,
-            dev_terms_flag=dev_terms,
+            filenames_flag=filenames,
             expand_units_flag=expand_units_flag,
             expand_numbers_flag=expand_numbers_flag,
             pauses_flag=pauses,

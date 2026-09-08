@@ -87,7 +87,7 @@ _stackvox_completion() {
             ;;
     esac
 
-    local norm_flags="--no-markdown --no-dev-terms --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
+    local norm_flags="--no-markdown --no-dev-terms --no-filenames --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
 
     case "$subcommand" in
         speak)
@@ -221,6 +221,12 @@ def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -
         help="Do not spell out dev acronyms espeak mispronounces (CLI, CI, IDE, AWS, URI, IAM, ...)",
     )
     parser.add_argument(
+        "--no-filenames",
+        dest="filenames",
+        action="store_false",
+        help="Leave filenames and paths as written (no 'README dot md', no 'line 42 of cli dot py')",
+    )
+    parser.add_argument(
         "--no-expand-units",
         dest="expand_units",
         action="store_false",
@@ -294,6 +300,7 @@ def _normalize_kwargs(args: argparse.Namespace) -> dict:
         "markdown": args.markdown,
         "pronunciations": _load_pronunciations(args.pronunciations),
         "dev_terms": args.dev_terms,
+        "filenames": args.filenames,
         "expand_units": args.expand_units,
         "expand_numbers": args.expand_numbers,
         "pauses": args.pauses,
