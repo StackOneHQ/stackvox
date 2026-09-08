@@ -10,6 +10,7 @@ from stackvox.text import (
     shape_pauses,
     speak_file_names,
     speak_file_refs,
+    speak_versions,
     strip_emoji,
     strip_thousands_separators,
     versions_to_words,
@@ -54,6 +55,70 @@ def test_semver_normalizes_end_to_end():
     out = normalize_for_speech("Upgraded to 0.7.0 today.", markdown=False)
     assert "0 point 7 point 0" in out
     assert "0 point 7.0" not in out
+
+
+# --- semantic versions -----------------------------------------------------
+
+
+def test_version_prerelease_is_ungluded_from_the_core():
+    """ "1.2.3-rc.1" glues into "three-arsee-one": espeak swallows the hyphen and
+    drops the suffix dot."""
+    assert speak_versions("1.2.3-rc.1") == "1.2.3, rc 1"
+    assert speak_versions("1.2.3-beta.2") == "1.2.3, beta 2"
+
+
+def test_version_build_metadata():
+    assert speak_versions("1.2.3+build.5") == "1.2.3, build 5"
+
+
+def test_version_operators_are_spoken_semantically():
+    assert speak_versions("^1.2.3") == "compatible with 1.2.3"
+    assert speak_versions(">=1.2.3") == "at least 1.2.3"
+    assert speak_versions("<=2.0.0") == "at most 2.0.0"
+    assert speak_versions(">1.0.0") == "above 1.0.0"
+    assert speak_versions("<2.0.0") == "below 2.0.0"
+    assert speak_versions("==1.2.3") == "exactly 1.2.3"
+    assert speak_versions("!=1.2.3") == "not equal to 1.2.3"
+
+
+def test_version_operator_keeps_a_glued_boundary_separate():
+    """pip writes the operator glued to the package name."""
+    assert speak_versions("requests>=2.0") == "requests at least 2.0"
+    assert speak_versions("arr[i]<5") == "arr[i] below 5"
+
+
+def test_caret_exponent_is_not_a_version_range():
+    """ "x^2" is exponentiation; only a token-initial caret is a caret range."""
+    assert speak_versions("x^2 plus 1") == "x^2 plus 1"
+    assert speak_versions("(a+b)^2") == "(a+b)^2"
+
+
+def test_version_wildcard_dot_is_spoken():
+    assert speak_versions("1.x") == "1 dot x"
+    assert speak_versions("2.*") == "2 dot *"
+
+
+def test_version_operator_survives_the_units_equals_rule():
+    """Regression: `expand_units` maps "=" to " equals ", which used to split
+    ">=" into a silent ">" plus "equals", inverting the meaning."""
+    assert normalize_for_speech(">=1.2.3", markdown=False) == "at least 1 point 2 point 3."
+
+
+def test_version_normalizes_end_to_end():
+    actual = normalize_for_speech("Upgrade to ^1.2.3-rc.1 today.", markdown=False)
+    assert actual == "Upgrade to compatible with 1 point 2 point 3, rc 1 today."
+
+
+def test_version_leaves_line_ranges_and_dates_alone():
+    assert speak_versions("cli.py:100-118") == "cli.py:100-118"
+    assert speak_versions("released 2026-09-08") == "released 2026-09-08"
+
+
+def test_version_leaves_two_part_numbers_to_the_decimal_stage():
+    """A two-part version is indistinguishable from a decimal, where
+    digit-by-digit is the correct reading. Deliberately untouched."""
+    assert normalize_for_speech("770.72", markdown=False) == "770 point 7 2."
+    assert normalize_for_speech("3.11", markdown=False) == "3 point 1 1."
 
 
 # --- file & path references ------------------------------------------------

@@ -12,6 +12,7 @@ exposed for composition and testing. See ``docs/speech-normalization.md``.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 __all__ = [
     "normalize_for_speech",
@@ -19,6 +20,7 @@ __all__ = [
     "strip_emoji",
     "strip_thousands_separators",
     "versions_to_words",
+    "speak_versions",
     "decimals_to_words",
     "speak_file_refs",
     "speak_file_names",
@@ -101,6 +103,81 @@ def versions_to_words(text: str) -> str:
     and a trailing sentence stop (``upgrade to 1.2.3.``) is preserved.
     """
     return _VERSION.sub(lambda m: m.group(0).replace(".", " point "), text)
+
+
+# --------------------------------------------------------------------------- #
+# Semantic versions                                                           #
+# --------------------------------------------------------------------------- #
+# `versions_to_words` handles the dotted digits. This handles everything else
+# in a semver string, all of which espeak gets wrong:
+#
+#   * a pre-release suffix GLUES to the core: "1.2.3-rc.1" voices as
+#     "one point two point three-arsee-one" (hyphen swallowed, suffix dot silent)
+#   * "^", ">" and "<" are SILENT, so "^1.2.3" is indistinguishable from a pin
+#   * ">=" is broken by our own `=` rule below, which splits it into "> equals",
+#     and a bare ">" voices as nothing, so ">=1.2.3" says "equals 1.2.3",
+#     inverting the meaning. espeak reads an intact ">=" correctly, so this stage
+#     must consume the operator BEFORE `expand_units` sees the "=".
+#   * "1.x" voices as "one ex" (dot silent)
+#
+# "~" is left to `expand_units`, which already maps it to "about"; accidentally
+# the right reading for a tilde range.
+
+# Longest operators first: ">=" must win before ">". Each requires a following
+# digit (optionally "v"-prefixed), which keeps the rules in version context and
+# off ordinary punctuation. The leading `(\S?)` captures whatever non-space
+# character precedes the operator and re-emits it with a space, so glued forms
+# like pip's "requests>=2.0" or "arr[i]<5" don't fuse into "requestsat least".
+_VERSION_OPERATORS: list[tuple[str, str]] = [
+    (r"(\S?)>=\s*(?=v?\d)", "at least "),
+    (r"(\S?)<=\s*(?=v?\d)", "at most "),
+    (r"(\S?)==\s*(?=v?\d)", "exactly "),
+    (r"(\S?)!=\s*(?=v?\d)", "not equal to "),
+    (r"(\S?)>\s*(?=v?\d)", "above "),
+    (r"(\S?)<\s*(?=v?\d)", "below "),
+]
+
+# "^" only at a token start: "x^2" and ")^2" are exponentiation, not a range.
+_CARET_RANGE = re.compile(r"(?<![\w)])\^\s*(?=v?\d)")
+
+# A dotted core (>=2 parts, so a bare "100" can't match) followed by a
+# "-prerelease" or "+build" suffix.
+_VERSION_SUFFIX = re.compile(r"(?<![\w.])(v?\d+(?:\.\d+){1,3})([-+][0-9A-Za-z][0-9A-Za-z.-]*)(?![\w])")
+
+# Wildcard versions: "1.x", "2.*", "1.2.X".
+_VERSION_WILDCARD = re.compile(r"(?<![\w.])(v?\d+(?:\.\d+)*)\.([xX*])(?![\w])")
+
+
+def _operator_repl(spoken: str) -> Callable[[re.Match[str]], str]:
+    """Replacement that re-emits the captured boundary character with a space."""
+
+    def repl(match: re.Match[str]) -> str:
+        boundary = match.group(1)
+        return f"{boundary} {spoken}" if boundary else spoken
+
+    return repl
+
+
+def speak_versions(text: str) -> str:
+    """Voice the non-numeric parts of a semantic version.
+
+    ``1.2.3-rc.1`` -> "1.2.3, rc 1"; ``>=1.2.3`` -> "at least 1.2.3";
+    ``^1.2.3`` -> "compatible with 1.2.3"; ``1.x`` -> "1 dot x". The dotted
+    digits are left for :func:`versions_to_words`, which runs later, so this
+    stage only unglues and names things espeak drops.
+
+    Must run BEFORE :func:`expand_units`, whose ``=`` rule would otherwise split
+    ``>=`` into a silent ``>`` plus "equals".
+    """
+    for pattern, words in _VERSION_OPERATORS:
+        text = re.sub(pattern, _operator_repl(words), text)
+    text = _CARET_RANGE.sub("compatible with ", text)
+    # Suffix: comma for a beat, then the tag's own dots and hyphens as spaces.
+    text = _VERSION_SUFFIX.sub(
+        lambda m: f"{m.group(1)}, {re.sub(r'[.-]', ' ', m.group(2)[1:])}",
+        text,
+    )
+    return _VERSION_WILDCARD.sub(r"\1 dot \2", text)
 
 
 def decimals_to_words(text: str) -> str:
@@ -589,6 +666,8 @@ def _shape_paragraph(
         text = speak_file_refs(text)
         text = speak_file_names(text)
     if expand_numbers_flag:
+        # Version ranges before units: the "=" unit rule would split ">=".
+        text = speak_versions(text)
         text = strip_thousands_separators(text)
     if pauses_flag:
         text = shape_pauses(text)

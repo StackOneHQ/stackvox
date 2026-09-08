@@ -62,6 +62,7 @@ Individual stages also exposed for composability (e.g. `expand_numbers(text)`,
 ### Pipeline order (order matters — encodes real bugs we hit)
 
 1. **Filenames** (if `filenames`): file refs, then bare filenames/paths (see below).
+1. **Versions** (if `expand_numbers`): range operators, pre-release suffixes, wildcards (see below).
 1. **Markdown** (if `markdown`): fenced/inline code, images, links→text, reference links, headings, blockquotes, horizontal rules, list markers, emphasis (leave lone `_` for snake_case), tables per `tables`.
 2. **Emoji** (if `strip_emoji`).
 3. **Numbers** (if `expand_numbers`): strip thousands commas (`1,198.9`→`1198.9`) *then* decimals→words (`1198.9`→`1198 point 9`).
@@ -72,6 +73,42 @@ Individual stages also exposed for composability (e.g. `expand_numbers(text)`,
 
 > Ordering note to preserve: **currency/unit expansion must precede the
 > decimal-point split**, or `£1.63` becomes `£1 point 63`. See `read-aloud.py`.
+
+### Semantic versions
+
+`versions_to_words` handles the dotted digits (`1.2.3` → "1 point 2 point 3").
+`speak_versions` handles everything else in a semver string, all of which espeak
+gets wrong:
+
+| Problem | espeak gives | We emit |
+|---|---|---|
+| pre-release glues to the core | `1.2.3-rc.1` → "…three-arsee-one" | `1.2.3, rc 1` |
+| `^`, `>`, `<` are **silent** | `^1.2.3` sounds identical to a pin | `compatible with 1.2.3` |
+| `>=` split by our own `=` rule | "equals 1.2.3", meaning inverted | `at least 1.2.3` |
+| wildcard dot is silent | `1.x` → "one ex" | `1 dot x` |
+
+Operators map semantically: `^`→"compatible with", `>=`→"at least",
+`<=`→"at most", `>`→"above", `<`→"below", `==`→"exactly", `!=`→"not equal to".
+`~` is left to `expand_units`, which already maps it to "about"; accidentally
+the right reading for a tilde range.
+
+Two guards worth keeping:
+
+- **Each operator requires a following digit**, which keeps the rules in version
+  context. The captured boundary character is re-emitted with a space, so glued
+  forms like pip's `requests>=2.0` and `arr[i]<5` don't fuse.
+- **A caret only counts at a token start.** `x^2` and `(a+b)^2` are
+  exponentiation, not caret ranges.
+
+> Ordering note to preserve: **`speak_versions` must run before `expand_units`**.
+> The `\s*=\s*` → " equals " rule would otherwise split `>=` into a bare `>`
+> (which espeak voices as *nothing*) plus "equals", so `>=1.2.3` came out as
+> "equals 1 point 2 point 3", the opposite of what it means.
+
+**Two-part versions are deliberately untouched.** `3.11` reads "3 point 1 1",
+not "3 point eleven", because a two-part version is indistinguishable from a
+real decimal where digit-by-digit is correct (`770.72` → "770 point 7 2").
+Fixing it needs a context heuristic, not a rule change.
 
 ### Filenames and paths
 
