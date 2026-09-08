@@ -292,6 +292,27 @@ class TestCmdStatus:
         assert "0.5.0" in out and "0.8.0" in out  # the skew is surfaced
         assert "restart" in out.lower()
 
+    def test_running_does_not_advise_restart_when_the_daemon_is_ahead(self, mocker, capsys):
+        """A daemon NEWER than the client means the client is the older install,
+        so restarting would downgrade what's serving."""
+        mocker.patch.object(cli.daemon, "is_running", return_value=True)
+        pid_path = mocker.MagicMock()
+        pid_path.read_text.return_value = "1\n"
+        mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
+        mocker.patch.object(cli.daemon, "SOCKET_PATH", "/tmp/x.sock")
+        mocker.patch.object(cli.daemon, "version", return_value=(True, "0.11.0"))
+        mocker.patch.object(cli.updates, "_current_version", return_value="0.9.0")
+        mocker.patch.object(cli.updates, "check_for_update", return_value=None)
+
+        rc = cli._cmd_status(_ns())
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "0.11.0" in out and "0.9.0" in out
+        assert "stackvox stop" not in out  # the restart advice itself
+        assert "newer" in out.lower()
+        assert "no restart needed" in out
+
     def test_stopped_returns_one(self, mocker, capsys):
         mocker.patch.object(cli.daemon, "is_running", return_value=False)
         rc = cli._cmd_status(_ns())
