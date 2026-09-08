@@ -218,3 +218,48 @@ class TestFormatNotice:
         assert "0.3.1" in msg
         assert "0.4.0" in msg
         assert "pipx upgrade stackvox" in msg
+
+
+class TestSourceTreeVersion:
+    """An editable install's dist metadata goes stale the moment a release bumps
+    pyproject, so a source checkout has to win over it."""
+
+    def test_reads_the_version_from_our_own_pyproject(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text('[project]\nname = "stackvox"\nversion = "1.2.3"\n')
+        assert updates._source_tree_version(path) == "1.2.3"
+
+    def test_ignores_a_pyproject_that_is_not_ours(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text('[project]\nname = "something-else"\nversion = "1.2.3"\n')
+        assert updates._source_tree_version(path) is None
+
+    def test_returns_none_when_there_is_no_pyproject(self, tmp_path):
+        assert updates._source_tree_version(tmp_path / "nope.toml") is None
+
+    def test_returns_none_when_the_file_is_malformed(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text("not valid toml {{{")
+        assert updates._source_tree_version(path) is None
+
+    def test_returns_none_when_the_version_is_absent(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text('[project]\nname = "stackvox"\n')
+        assert updates._source_tree_version(path) is None
+
+
+class TestCurrentVersion:
+    def test_source_tree_beats_stale_dist_metadata(self, mocker):
+        mocker.patch.object(updates, "_source_tree_version", return_value="0.11.0")
+        mocker.patch.object(updates, "_pkg_version", return_value="0.9.0")
+        assert updates._current_version() == "0.11.0"
+
+    def test_falls_back_to_dist_metadata_for_a_real_install(self, mocker):
+        mocker.patch.object(updates, "_source_tree_version", return_value=None)
+        mocker.patch.object(updates, "_pkg_version", return_value="0.11.0")
+        assert updates._current_version() == "0.11.0"
+
+    def test_reports_unknown_when_not_installed_at_all(self, mocker):
+        mocker.patch.object(updates, "_source_tree_version", return_value=None)
+        mocker.patch.object(updates, "_pkg_version", side_effect=updates.PackageNotFoundError)
+        assert updates._current_version() == "0.0.0+unknown"

@@ -26,6 +26,7 @@ import socket
 import socketserver
 import sys
 import threading
+import time
 from typing import Any
 
 import sounddevice as sd
@@ -42,6 +43,10 @@ MAX_QUEUE = 2
 WORKER_POLL_SECONDS = 0.5
 CLIENT_TIMEOUT_SECONDS = 1.0
 PING_TIMEOUT_SECONDS = 0.5
+# How long `stop` waits for the daemon process to actually exit after it has
+# acknowledged the request, and how often it re-checks.
+STOP_TIMEOUT_SECONDS = 5.0
+STOP_POLL_SECONDS = 0.05
 RECV_BYTES = 1024
 
 
@@ -273,14 +278,19 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def is_running() -> bool:
+def _read_pid() -> int | None:
+    """The pid recorded in the pid file, or None if absent or unparseable."""
     if not PID_PATH.exists():
-        return False
+        return None
     try:
-        pid = int(PID_PATH.read_text().strip())
-    except ValueError:
-        return False
-    return _pid_alive(pid)
+        return int(PID_PATH.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def is_running() -> bool:
+    pid = _read_pid()
+    return pid is not None and _pid_alive(pid)
 
 
 def _check_for_update_async() -> None:
@@ -359,8 +369,29 @@ def say(
     return send(req)
 
 
-def stop() -> tuple[bool, str]:
-    return send({"command": "stop"})
+def stop(timeout: float = STOP_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Shut the daemon down and wait until the process has actually gone.
+
+    The daemon acknowledges the request and only then unwinds `serve_forever`
+    and removes its pid file, so returning on the ack alone made
+    `stackvox stop && stackvox serve` race: `serve` still saw a live pid, refused
+    to start, and the shutdown then completed, leaving nothing running at all.
+    Reporting success before the process has exited makes that sequence, the one
+    `status` recommends, silently useless.
+    """
+    pid = _read_pid()
+    ok, resp = send({"command": "stop"})
+    if not ok or pid is None:
+        # Nothing acknowledged, or no pid to watch: the caller's own
+        # `is_running` check is as good as it gets.
+        return ok, resp
+    deadline = time.monotonic() + timeout
+    while True:
+        if not _pid_alive(pid):
+            return True, resp
+        if time.monotonic() >= deadline:
+            return False, f"daemon acknowledged stop but pid {pid} is still alive after {timeout:g}s"
+        time.sleep(STOP_POLL_SECONDS)
 
 
 def cancel() -> tuple[bool, str]:

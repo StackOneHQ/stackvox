@@ -78,6 +78,9 @@ class TestSendHelpers:
         assert send.call_args.args[0] == {"text": "hi"}
 
     def test_stop_sends_command_stop(self, mocker):
+        # _read_pid is mocked out so the wait-for-exit loop can't reach a real
+        # daemon's pid file and block on a live process.
+        mocker.patch.object(daemon, "_read_pid", return_value=None)
         send = mocker.patch.object(daemon, "send", return_value=(True, "ok"))
         daemon.stop()
         assert send.call_args.args[0] == {"command": "stop"}
@@ -136,3 +139,72 @@ class TestStartDeviceWatcher:
         with caplog.at_level(logging.DEBUG, logger="stackvox.daemon"):
             daemon._start_device_watcher()  # must not raise
         assert any("CoreAudio unavailable" in r.message for r in caplog.records)
+
+
+class TestStopWaitsForExit:
+    """`stop` reports success only once the process has actually gone.
+
+    The daemon acknowledges the request before unwinding, so returning on the
+    ack made `stackvox stop && stackvox serve` race: serve saw a live pid and
+    refused, then the shutdown finished, leaving nothing running.
+    """
+
+    def test_returns_send_failure_unchanged(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=4242)
+        mocker.patch.object(daemon, "send", return_value=(False, "daemon not running"))
+
+        actual = daemon.stop()
+
+        assert actual == (False, "daemon not running")
+
+    def test_does_not_wait_when_no_pid_is_recorded(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=None)
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        alive = mocker.patch.object(daemon, "_pid_alive")
+
+        actual = daemon.stop()
+
+        assert actual == (True, "ok")
+        alive.assert_not_called()
+
+    def test_waits_until_the_process_has_exited(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=4242)
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        alive = mocker.patch.object(daemon, "_pid_alive", side_effect=[True, True, False])
+        sleep = mocker.patch.object(daemon.time, "sleep")
+
+        actual = daemon.stop()
+
+        assert actual == (True, "ok")
+        assert alive.call_count == 3
+        assert sleep.call_count == 2
+
+    def test_fails_when_the_process_outlives_the_timeout(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=4242)
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        mocker.patch.object(daemon, "_pid_alive", return_value=True)
+        mocker.patch.object(daemon.time, "sleep")
+
+        ok, resp = daemon.stop(timeout=0.0)
+
+        assert ok is False
+        assert "still alive" in resp
+        assert "4242" in resp
+
+
+class TestReadPid:
+    def test_returns_none_when_missing(self, mocker, tmp_path):
+        mocker.patch.object(daemon, "PID_PATH", tmp_path / "missing.pid")
+        assert daemon._read_pid() is None
+
+    def test_returns_none_when_unparseable(self, mocker, tmp_path):
+        pid = tmp_path / "garbage.pid"
+        pid.write_text("not-a-number")
+        mocker.patch.object(daemon, "PID_PATH", pid)
+        assert daemon._read_pid() is None
+
+    def test_returns_the_recorded_pid(self, mocker, tmp_path):
+        pid = tmp_path / "live.pid"
+        pid.write_text("4242\n")
+        mocker.patch.object(daemon, "PID_PATH", pid)
+        assert daemon._read_pid() == 4242

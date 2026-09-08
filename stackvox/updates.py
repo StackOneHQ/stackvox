@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -26,14 +27,51 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - covered by 3.10 CI
+    import tomli as tomllib
+
 from stackvox.paths import cache_dir
 
 logger = logging.getLogger(__name__)
 
 
+def _source_tree_version(pyproject: Path | None = None) -> str | None:
+    """Our version from `pyproject.toml`, when running from a source checkout.
+
+    An editable install records its version in dist metadata at install time, so
+    the moment a release bumps `pyproject.toml` that metadata goes stale. The
+    developer then gets a phantom "update available: 0.9.0 -> 0.11.0" against
+    their own tree, and `status` reads the running daemon as newer than the
+    "installed" package and tells them to restart it for no reason.
+
+    Returns None when there's no such file (a normal pip/pipx install) or when it
+    isn't ours, so the metadata path stays authoritative for real installs.
+    """
+    path = pyproject or Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if not isinstance(project, dict) or project.get("name") != "stackvox":
+        return None
+    version = project.get("version")
+    return version if isinstance(version, str) else None
+
+
 def _current_version() -> str:
     """Read our own installed version. Late-bound so importing this module
-    early in the package init chain doesn't trip a circular import."""
+    early in the package init chain doesn't trip a circular import.
+
+    A source checkout wins over dist metadata, which goes stale on an editable
+    install after every release.
+    """
+    from_source = _source_tree_version()
+    if from_source is not None:
+        return from_source
     try:
         return _pkg_version("stackvox")
     except PackageNotFoundError:

@@ -432,12 +432,21 @@ def _cmd_status(_: argparse.Namespace) -> int:
         rc = 0
         # The running daemon can lag the installed package if it wasn't restarted
         # after an upgrade — surface that skew instead of trusting it blindly.
+        # Only a daemon that is genuinely BEHIND wants restarting; a newer one
+        # means the client just run is the older install (a checkout alongside a
+        # global one), and restarting would downgrade what's serving.
         got, running_version = daemon.version()
         if got and running_version != installed:
-            print(
-                f"daemon running {running_version}, but {installed} is installed "
-                f"— restart the daemon (stackvox stop; stackvox serve) to pick it up"
-            )
+            if updates._is_newer(installed, running_version):
+                print(
+                    f"daemon running {running_version}, but {installed} is installed "
+                    f"— restart the daemon (stackvox stop; stackvox serve) to pick it up"
+                )
+            else:
+                print(
+                    f"daemon running {running_version} is newer than the {installed} client "
+                    f"you just ran; no restart needed"
+                )
     else:
         print("stopped")
         rc = 1
