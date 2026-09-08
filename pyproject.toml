@@ -61,6 +61,14 @@ stackvox = ["py.typed", "data/stackvox-say"]
 line-length = 110
 target-version = "py310"
 
+[tool.ruff.format]
+# Ruff 0.16 began formatting Python code blocks inside Markdown. Ours are
+# illustrative rather than real code, and their layout is deliberate: the
+# `normalize_for_speech` signature in docs/speech-normalization.md aligns its
+# trailing comments into a readable column of flags, which the formatter
+# collapses. Prose is a human call, so keep the formatter to the code.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
