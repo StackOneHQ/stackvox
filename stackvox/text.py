@@ -485,6 +485,36 @@ _DEV_PRONUNCIATIONS: dict[str, str] = {
 
 
 # --------------------------------------------------------------------------- #
+# Abbreviations                                                               #
+# --------------------------------------------------------------------------- #
+# Chat shorthand, expanded to the words it stands for. Distinct from
+# _DEV_PRONUNCIATIONS above, which fixes how a term *sounds*; this changes
+# *which words are said*, so it gets its own flag (`abbreviations`). That is the
+# lesson `filenames` taught when it was coupled to `dev_terms`.
+#
+# Applied whole-word and case-insensitive, so "LMK", "Lmk" and "lmk" all match.
+# Deliberately excluded ("rn", "eta", "aka" and friends): real words, Greek
+# letters, or acronyms espeak already voices correctly, so expanding them costs
+# more in false positives than it buys. "fyi" keeps its letters because that is how it is
+# said aloud, not "for your information".
+_ABBREVIATIONS: dict[str, str] = {
+    "lmk": "let me know",
+    "iirc": "if I recall correctly",
+    "afaik": "as far as I know",
+    "idk": "I don't know",
+    "tbh": "to be honest",
+    "imo": "in my opinion",
+    "btw": "by the way",
+    "fyi": "F Y I",
+    "asap": "as soon as possible",
+    "wrt": "with respect to",
+    # Both spellings of the same abbreviation; the bare form is at least as common.
+    "tl;dr": "too long, didn't read",
+    "tldr": "too long, didn't read",
+}
+
+
+# --------------------------------------------------------------------------- #
 # Pauses                                                                      #
 # --------------------------------------------------------------------------- #
 
@@ -687,6 +717,7 @@ def normalize_for_speech(
     markdown: bool = True,
     pronunciations: dict[str, str] | None = None,
     dev_terms: bool = True,
+    abbreviations: bool = True,
     filenames: bool = True,
     expand_units: bool = True,
     expand_numbers: bool = True,
@@ -701,9 +732,13 @@ def normalize_for_speech(
     """Normalize ``text`` into speakable prose. Returns paragraphs joined by
     newlines. See ``docs/speech-normalization.md`` for the full contract."""
     expand_units_flag, expand_numbers_flag = expand_units, expand_numbers
-    # Built-in dev-term fixes first; caller-supplied pronunciations override them
-    # (keyed case-insensitively, so a caller's "CLI" beats the default "cli").
-    effective_pronunciations: dict[str, str] = dict(_DEV_PRONUNCIATIONS) if dev_terms else {}
+    # Built-in fixes first; caller-supplied pronunciations override them (keyed
+    # case-insensitively, so a caller's "CLI" beats the default "cli"). The two
+    # built-in dicts share no keys, and neither one's spoken form contains a key
+    # of the other, so the sequential passes can't feed each other.
+    effective_pronunciations: dict[str, str] = dict(_ABBREVIATIONS) if abbreviations else {}
+    if dev_terms:
+        effective_pronunciations.update(_DEV_PRONUNCIATIONS)
     for written, spoken in (pronunciations or {}).items():
         effective_pronunciations[written.lower()] = spoken
 

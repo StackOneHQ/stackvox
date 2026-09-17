@@ -487,3 +487,44 @@ def test_caller_pronunciations_override_dev_terms():
     out = normalize_for_speech("Use the CLI.", markdown=False, pronunciations={"CLI": "command line"})
     assert "command line" in out
     assert "C L I" not in out
+
+
+def test_chat_abbreviations_are_expanded():
+    assert normalize_for_speech("lmk what you think", markdown=False) == "let me know what you think."
+    assert "if I recall correctly" in normalize_for_speech("iirc it shipped", markdown=False)
+    assert "by the way" in normalize_for_speech("btw the build is green", markdown=False)
+    assert "as soon as possible" in normalize_for_speech("ship it asap", markdown=False)
+    assert "with respect to" in normalize_for_speech("wrt the plan", markdown=False)
+
+
+def test_chat_abbreviations_are_case_insensitive():
+    assert "let me know" in normalize_for_speech("LMK if that works", markdown=False)
+    assert "to be honest" in normalize_for_speech("Tbh it is fine", markdown=False)
+
+
+def test_tldr_expands_in_both_spellings():
+    assert "too long, didn't read" in normalize_for_speech("tl;dr it works", markdown=False)
+    assert "too long, didn't read" in normalize_for_speech("tldr it works", markdown=False)
+
+
+def test_chat_abbreviations_are_whole_word_only():
+    # must not rewrite the middle of a longer token
+    assert "let me know" not in normalize_for_speech("lmkfoo", markdown=False)
+    assert "in my opinion" not in normalize_for_speech("imos", markdown=False)
+
+
+def test_chat_abbreviations_can_be_disabled():
+    assert normalize_for_speech("lmk soon", markdown=False, abbreviations=False) == "lmk soon."
+
+
+def test_caller_pronunciations_override_abbreviations():
+    out = normalize_for_speech("lmk soon", markdown=False, pronunciations={"LMK": "tell me"})
+    assert "tell me" in out
+    assert "let me know" not in out
+
+
+def test_abbreviations_independent_of_dev_terms():
+    # the `filenames` lesson: an unrelated switch must not silently disable this
+    out = normalize_for_speech("lmk about the CLI", markdown=False, dev_terms=False)
+    assert "let me know" in out
+    assert "C L I" not in out
