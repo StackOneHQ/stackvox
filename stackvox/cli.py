@@ -87,7 +87,7 @@ _stackvox_completion() {
             ;;
     esac
 
-    local norm_flags="--no-markdown --no-dev-terms --no-filenames --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
+    local norm_flags="--no-markdown --no-dev-terms --no-abbreviations --no-filenames --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
 
     case "$subcommand" in
         speak)
@@ -221,6 +221,12 @@ def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -
         help="Do not spell out dev acronyms espeak mispronounces (CLI, CI, IDE, AWS, URI, IAM, ...)",
     )
     parser.add_argument(
+        "--no-abbreviations",
+        dest="abbreviations",
+        action="store_false",
+        help="Leave chat shorthand as written (no 'lmk' -> 'let me know', 'iirc', 'btw', ...)",
+    )
+    parser.add_argument(
         "--no-filenames",
         dest="filenames",
         action="store_false",
@@ -300,6 +306,7 @@ def _normalize_kwargs(args: argparse.Namespace) -> dict:
         "markdown": args.markdown,
         "pronunciations": _load_pronunciations(args.pronunciations),
         "dev_terms": args.dev_terms,
+        "abbreviations": args.abbreviations,
         "filenames": args.filenames,
         "expand_units": args.expand_units,
         "expand_numbers": args.expand_numbers,

@@ -45,6 +45,7 @@ def normalize_for_speech(
     *,
     markdown: bool = True,          # strip Markdown structure to prose
     pronunciations: dict[str, str] | None = None,  # {written: spoken}, whole-word, case-insensitive
+    abbreviations: bool = True,     # chat shorthand -> words: lmk, iirc, btw, tl;dr …
     expand_units: bool = True,      # £/p/kWh/MPG/kg/km, ÷ × =
     expand_numbers: bool = True,    # thousands commas removed; decimals → "X point d d"
     pauses: bool = True,            # dash → beat (…); comma before "("
@@ -68,7 +69,7 @@ Individual stages also exposed for composability (e.g. `expand_numbers(text)`,
 3. **Numbers** (if `expand_numbers`): strip thousands commas (`1,198.9`→`1198.9`) *then* decimals→words (`1198.9`→`1198 point 9`).
 4. **Units/symbols** (if `expand_units`): currency **before** decimals is impossible if decimals ran first, so units run here and the decimal pass must see `£1.63`→`1.63 pounds` first → **currency/units run before the decimal split**. (This is why `read-aloud.py` orders units → decimals.)
 5. **Pauses** (if `pauses`): ` - `/`—`→` … `; word`(`→`word, (`.
-6. **Pronunciations**: whole-word, case-insensitive, from `pronunciations`.
+6. **Pronunciations**: whole-word, case-insensitive: built-in abbreviations (if `abbreviations`), then built-in dev terms (if `dev_terms`), then `pronunciations`, which overrides both.
 7. **Whitespace collapse**; **terminal stops** (if `terminal_stops`).
 
 > Ordering note to preserve: **currency/unit expansion must precede the
@@ -160,6 +161,28 @@ domains (`example.com`, `claude.ai`). Two deliberate carve-outs:
 Own flag, `filenames`, deliberately **not** `dev_terms`: the acronym dict and
 filename handling are unrelated, and coupling them meant `--no-dev-terms`
 silently disabled file refs too.
+
+### Chat shorthand
+
+`_ABBREVIATIONS` expands chat shorthand to the words it stands for: `lmk` →
+"let me know", `iirc`, `afaik`, `idk`, `tbh`, `imo`, `btw`, `fyi`, `asap`,
+`wrt`, `tl;dr`/`tldr`. Claude responses and blog prose are full of it, and
+espeak has no reading that helps: it either spells the cluster out or tries to
+say it as a word.
+
+It rides the same `apply_pronunciations` pass as `_DEV_PRONUNCIATIONS` but is a
+**separate dict behind a separate flag**, because the two do different jobs:
+`dev_terms` fixes how a term *sounds*, `abbreviations` changes *which words are
+said*. Coupling them would repeat the `filenames` mistake; one switch silently
+disabling an unrelated stage. The two dicts share no keys, and neither one's
+spoken form contains a key of the other, so the sequential passes can't feed
+each other.
+
+Deliberately excluded: shorthand that doubles as a real word, a Greek letter or
+a name (`rn`, `eta`, `aka`), where the false positives cost more than the
+expansion buys. `fyi` keeps its letters ("F Y I" is how it is said aloud), so
+the dict is an *expansion* table, not a spelling-out table, with one exception
+that earns its place.
 
 ## 4. CLI surface
 
