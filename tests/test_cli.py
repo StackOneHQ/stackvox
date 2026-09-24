@@ -7,6 +7,7 @@ import io
 import pytest
 
 from stackvox import cli
+from stackvox.voices import BUILTIN_VOICES
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +18,12 @@ def _stdin_is_a_tty(mocker):
     and providing a real stdin StringIO.
     """
     mocker.patch.object(cli.sys.stdin, "isatty", return_value=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_user_config(monkeypatch, tmp_path):
+    """Point config at a missing file so a developer's own config never leaks into tests."""
+    monkeypatch.setenv("STACKVOX_CONFIG", str(tmp_path / "absent.toml"))
 
 
 @pytest.fixture(autouse=True)
@@ -233,7 +240,13 @@ class TestCmdServe:
         serve = mocker.patch.object(cli.daemon, "serve")
         rc = cli._cmd_serve(_ns(voice="bf_emma", speed=1.1, lang="en-gb"))
         assert rc == 0
-        serve.assert_called_once_with(voice="bf_emma", speed=1.1, lang="en-gb")
+        serve.assert_called_once_with(voice="bf_emma", speed=1.1, lang="en-gb", custom_voices=BUILTIN_VOICES)
+
+    def test_voice_mix_default_starts_daemon_with_its_lang(self, mocker):
+        serve = mocker.patch.object(cli.daemon, "serve")
+        rc = cli._cmd_serve(_ns(voice="ramona", speed=None, lang=None))
+        assert rc == 0
+        assert serve.call_args.kwargs["lang"] == "en-gb"
 
     def test_returns_one_when_daemon_already_running(self, mocker, capsys):
         mocker.patch.object(cli.daemon, "serve", side_effect=RuntimeError("daemon already running"))
@@ -582,3 +595,32 @@ class TestCmdCancel:
         cancel = mocker.patch.object(cli.daemon, "cancel")
         assert cli._cmd_cancel(_ns()) == 0
         cancel.assert_not_called()
+
+
+class TestVoiceParams:
+    def _config(self, monkeypatch, tmp_path, body):
+        path = tmp_path / "config.toml"
+        path.write_text(body, encoding="utf-8")
+        monkeypatch.setenv("STACKVOX_CONFIG", str(path))
+
+    def test_mix_lang_beats_config_lang(self, monkeypatch, tmp_path):
+        self._config(monkeypatch, tmp_path, '[defaults]\nlang = "en-us"\nspeed = 0.95\n')
+        params, _ = cli._voice_params(_ns(voice="chip", speed=None, lang=None))
+        assert (params.voice, params.lang, params.speed) == ("chip", "en-gb", 1.0)
+
+    def test_explicit_flags_beat_the_mix(self, monkeypatch, tmp_path):
+        self._config(monkeypatch, tmp_path, '[defaults]\nlang = "en-us"\n')
+        params, _ = cli._voice_params(_ns(voice="chip", speed=1.4, lang="en-us"))
+        assert (params.lang, params.speed) == ("en-us", 1.4)
+
+    def test_plain_kokoro_voice_uses_config(self, monkeypatch, tmp_path):
+        self._config(monkeypatch, tmp_path, '[defaults]\nlang = "en-us"\nspeed = 0.95\n')
+        params, _ = cli._voice_params(_ns(voice="af_aoede", speed=None, lang=None))
+        assert (params.lang, params.speed) == ("en-us", 0.95)
+
+    def test_say_sends_the_resolved_mix_settings_to_the_daemon(self, mocker, monkeypatch, tmp_path):
+        self._config(monkeypatch, tmp_path, '[defaults]\nlang = "en-us"\n')
+        say = mocker.patch.object(cli.daemon, "say", return_value=(True, "ok"))
+        rc = cli._cmd_say(_ns(voice="ramona", speed=1.1, lang=None, text="hi", fallback_say=False))
+        assert rc == 0
+        say.assert_called_once_with("hi", voice="ramona", speed=1.1, lang="en-gb")

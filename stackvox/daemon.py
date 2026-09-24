@@ -27,6 +27,7 @@ import socketserver
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import sounddevice as sd
@@ -34,6 +35,7 @@ import sounddevice as sd
 from stackvox import updates
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
 from stackvox.paths import pid_path, socket_path
+from stackvox.voices import VoiceMix
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +172,10 @@ def _start_device_watcher() -> None:
 
 
 class _DaemonState:
-    def __init__(self, voice: str, speed: float, lang: str) -> None:
-        self.tts = Stackvox(voice=voice, speed=speed, lang=lang)
+    def __init__(
+        self, voice: str, speed: float, lang: str, custom_voices: Mapping[str, VoiceMix] | None = None
+    ) -> None:
+        self.tts = Stackvox(voice=voice, speed=speed, lang=lang, custom_voices=custom_voices)
         self.queue: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUE)
         self.stop_event = threading.Event()
         self.worker = threading.Thread(target=self._worker, daemon=True)
@@ -309,7 +313,12 @@ def _check_for_update_async() -> None:
     threading.Thread(target=_worker, daemon=True, name="update-check").start()
 
 
-def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = DEFAULT_LANG) -> None:
+def serve(
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    lang: str = DEFAULT_LANG,
+    custom_voices: Mapping[str, VoiceMix] | None = None,
+) -> None:
     if is_running():
         raise RuntimeError(f"daemon already running (pid {PID_PATH.read_text().strip()})")
 
@@ -317,7 +326,7 @@ def serve(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED, lang: str = 
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()
 
-    state = _DaemonState(voice=voice, speed=speed, lang=lang)
+    state = _DaemonState(voice=voice, speed=speed, lang=lang, custom_voices=custom_voices)
     server = _UnixServer(str(SOCKET_PATH), _Handler)
     server.state = state  # type: ignore[attr-defined]
 

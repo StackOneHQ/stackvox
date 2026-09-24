@@ -13,6 +13,7 @@ import soundfile as sf
 from stackvox import config, daemon, paths, updates
 from stackvox.engine import Stackvox
 from stackvox.text import normalize_for_speech
+from stackvox.voices import VoiceMix, VoiceParams, resolve
 
 
 def _configure_logging() -> None:
@@ -185,9 +186,30 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
 
 
 def _add_voice_args(parser: argparse.ArgumentParser, defaults: config.Defaults) -> None:
+    # Speed and lang default to None rather than the config value so a voice
+    # mix's own lang/speed can sit between an explicit flag and the config;
+    # handlers fill them in with _voice_params.
     parser.add_argument("--voice", default=defaults.voice)
-    parser.add_argument("--speed", type=float, default=defaults.speed)
-    parser.add_argument("--lang", default=defaults.lang)
+    parser.add_argument(
+        "--speed", type=float, default=None, help="default: the voice mix's speed, then config"
+    )
+    parser.add_argument("--lang", default=None, help="default: the voice mix's lang, then config")
+
+
+def _voice_params(args: argparse.Namespace) -> tuple[VoiceParams, dict[str, VoiceMix]]:
+    """Resolve voice/speed/lang for a command, plus the voice mixes the engine should know."""
+    defaults = config.load_defaults()
+    custom = config.load_voices()
+    params = resolve(
+        args.voice,
+        args.speed,
+        args.lang,
+        default_voice=defaults.voice,
+        default_speed=defaults.speed,
+        default_lang=defaults.lang,
+        custom=custom,
+    )
+    return params, custom
 
 
 def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -> None:
@@ -360,7 +382,8 @@ def _cmd_speak(args: argparse.Namespace) -> int:
         text = _resolve_normalized(text, args)
         if text is None:
             return 1
-    tts = Stackvox(voice=args.voice, speed=args.speed, lang=args.lang)
+    params, custom = _voice_params(args)
+    tts = Stackvox(voice=params.voice, speed=params.speed, lang=params.lang, custom_voices=custom)
     if args.out:
         samples, sr = tts.synthesize(text)
         sf.write(args.out, samples, sr)
@@ -379,7 +402,8 @@ def _cmd_say(args: argparse.Namespace) -> int:
         text = _resolve_normalized(text, args)
         if text is None:
             return 1
-    ok, resp = daemon.say(text, voice=args.voice, speed=args.speed, lang=args.lang)
+    params, _ = _voice_params(args)
+    ok, resp = daemon.say(text, voice=params.voice, speed=params.speed, lang=params.lang)
     if ok:
         return 0
     if args.fallback_say:
@@ -407,7 +431,8 @@ def _cmd_normalize(args: argparse.Namespace) -> int:
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
-        daemon.serve(voice=args.voice, speed=args.speed, lang=args.lang)
+        params, custom = _voice_params(args)
+        daemon.serve(voice=params.voice, speed=params.speed, lang=params.lang, custom_voices=custom)
     except RuntimeError as exc:
         print(f"[stackvox] {exc}", file=sys.stderr)
         return 1
@@ -468,7 +493,7 @@ def _cmd_status(_: argparse.Namespace) -> int:
 
 
 def _cmd_voices(args: argparse.Namespace) -> int:
-    tts = Stackvox()
+    tts = Stackvox(custom_voices=config.load_voices())
     for name in tts.voices():
         print(name)
     return 0

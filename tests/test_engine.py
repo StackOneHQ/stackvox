@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from stackvox import engine
+from stackvox.voices import UnknownVoiceError, VoiceMix
 
 
 @pytest.fixture
@@ -224,8 +225,70 @@ class TestSplitSentences:
 class TestVoices:
     def test_returns_sorted_voice_ids(self, fake_kokoro):
         fake_kokoro.return_value.get_voices.return_value = ["bf_emma", "af_sarah", "am_adam"]
-        tts = engine.Stackvox()
+        tts = engine.Stackvox(custom_voices={})
         assert tts.voices() == ["af_sarah", "am_adam", "bf_emma"]
+
+    def test_includes_voice_mix_names(self, fake_kokoro):
+        fake_kokoro.return_value.get_voices.return_value = ["bf_emma", "am_adam"]
+        tts = engine.Stackvox()
+        assert tts.voices() == ["am_adam", "bf_emma", "chip", "ramona"]
+
+
+class TestVoiceMixes:
+    MIX = {"duo": VoiceMix(mix=(("am_adam", 3.0), ("bf_emma", 1.0)), lang="en-gb", speed=0.9)}
+
+    def _kokoro_with_styles(self, fake_kokoro):
+        styles = {"am_adam": np.full(4, 1.0, dtype=np.float32), "bf_emma": np.full(4, 5.0, dtype=np.float32)}
+        kokoro = fake_kokoro.return_value
+        kokoro.get_voices.return_value = list(styles)
+        kokoro.get_voice_style.side_effect = styles.__getitem__
+        kokoro.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
+        return kokoro
+
+    def test_mix_is_blended_and_brings_its_own_lang_and_speed(self, fake_kokoro):
+        kokoro = self._kokoro_with_styles(fake_kokoro)
+        tts = engine.Stackvox(voice="duo", speed=1.3, lang="en-us", custom_voices=self.MIX)
+
+        tts.synthesize("hi")
+
+        kwargs = kokoro.create.call_args.kwargs
+        # 3:1 weights normalised: (3 * 1 + 1 * 5) / 4
+        np.testing.assert_allclose(kwargs["voice"], np.full(4, 2.0))
+        assert kwargs["lang"] == "en-gb"
+        assert kwargs["speed"] == 0.9
+
+    def test_per_call_lang_and_speed_beat_the_mix(self, fake_kokoro):
+        kokoro = self._kokoro_with_styles(fake_kokoro)
+        tts = engine.Stackvox(custom_voices=self.MIX)
+
+        tts.synthesize("hi", voice="duo", lang="en-us", speed=1.2)
+
+        assert kokoro.create.call_args.kwargs["lang"] == "en-us"
+        assert kokoro.create.call_args.kwargs["speed"] == 1.2
+
+    def test_blend_is_computed_once_per_mix(self, fake_kokoro):
+        kokoro = self._kokoro_with_styles(fake_kokoro)
+        tts = engine.Stackvox(voice="duo", custom_voices=self.MIX)
+
+        tts.synthesize("one")
+        tts.synthesize("two")
+
+        assert kokoro.get_voice_style.call_count == 2
+
+    def test_plain_kokoro_voice_passes_through_by_name(self, fake_kokoro):
+        kokoro = self._kokoro_with_styles(fake_kokoro)
+        tts = engine.Stackvox(custom_voices=self.MIX)
+
+        tts.synthesize("hi", voice="am_adam")
+
+        assert kokoro.create.call_args.kwargs["voice"] == "am_adam"
+
+    def test_mix_naming_a_missing_kokoro_voice_raises(self, fake_kokoro):
+        self._kokoro_with_styles(fake_kokoro)
+        tts = engine.Stackvox(voice="bad", custom_voices={"bad": VoiceMix(mix=(("zz_nobody", 1.0),))})
+
+        with pytest.raises(UnknownVoiceError, match="zz_nobody"):
+            tts.synthesize("hi")
 
 
 class TestSpeakSequence:
