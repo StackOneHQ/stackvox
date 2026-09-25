@@ -28,12 +28,20 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import sounddevice as sd
 
 from stackvox import updates
-from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, Stackvox
+from stackvox.engine import (
+    DEFAULT_BACKEND,
+    DEFAULT_LANG,
+    DEFAULT_SPEED,
+    DEFAULT_VOICE,
+    MLX_OPTIONS,
+    Stackvox,
+)
 from stackvox.paths import pid_path, socket_path
 from stackvox.voices import VoiceMix
 
@@ -211,9 +219,26 @@ def _exit_wedged() -> None:
 
 class _DaemonState:
     def __init__(
-        self, voice: str, speed: float, lang: str, custom_voices: Mapping[str, VoiceMix] | None = None
+        self,
+        voice: str,
+        speed: float,
+        lang: str,
+        custom_voices: Mapping[str, VoiceMix] | None = None,
+        backend: str = DEFAULT_BACKEND,
+        model_dir: Path | None = None,
+        model_adapter: Path | None = None,
+        generation_defaults: dict | None = None,
     ) -> None:
-        self.tts = Stackvox(voice=voice, speed=speed, lang=lang, custom_voices=custom_voices)
+        self.tts = Stackvox(
+            voice=voice,
+            speed=speed,
+            lang=lang,
+            custom_voices=custom_voices,
+            backend=backend,
+            model_dir=model_dir,
+            model_adapter=model_adapter,
+        )
+        self.generation_defaults = generation_defaults or {}
         self.queue: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUE)
         self.stop_event = threading.Event()
         # Monotonic time by which the worker must finish its current request;
@@ -237,11 +262,15 @@ class _DaemonState:
                 _refresh_audio_devices()
                 _audio_dirty.clear()
             try:
+                generation_kwargs: dict[str, Any] = {
+                    key: req.get(key, self.generation_defaults.get(key)) for key in MLX_OPTIONS
+                }
                 self.tts.speak(
                     req["text"],
                     voice=req.get("voice"),
                     speed=req.get("speed"),
                     lang=req.get("lang"),
+                    **generation_kwargs,
                 )
             except Exception:
                 logger.exception("playback error")
@@ -332,6 +361,12 @@ class _Handler(socketserver.StreamRequestHandler):
             self.wfile.write(b"err: text must be a string\n")
             return
 
+        # Reject here rather than in the worker so the client sees the error
+        # instead of an "ok" followed by a failure only visible in the log.
+        if state.tts.backend != "mlx" and any(req.get(key) is not None for key in MLX_OPTIONS):
+            self.wfile.write(b"err: generation options require a daemon started with --backend mlx\n")
+            return
+
         if state.submit(req):
             self.wfile.write(b"ok\n")
         else:
@@ -387,6 +422,15 @@ def serve(
     speed: float = DEFAULT_SPEED,
     lang: str = DEFAULT_LANG,
     custom_voices: Mapping[str, VoiceMix] | None = None,
+    backend: str = DEFAULT_BACKEND,
+    model_dir: Path | None = None,
+    model_adapter: Path | None = None,
+    reference_audio: Path | None = None,
+    reference_text: str | None = None,
+    instruct: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
 ) -> None:
     if is_running():
         raise RuntimeError(f"daemon already running (pid {PID_PATH.read_text().strip()})")
@@ -395,7 +439,23 @@ def serve(
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()
 
-    state = _DaemonState(voice=voice, speed=speed, lang=lang, custom_voices=custom_voices)
+    state = _DaemonState(
+        voice=voice,
+        speed=speed,
+        lang=lang,
+        custom_voices=custom_voices,
+        backend=backend,
+        model_dir=model_dir,
+        model_adapter=model_adapter,
+        generation_defaults={
+            "reference_audio": reference_audio,
+            "reference_text": reference_text,
+            "instruct": instruct,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+        },
+    )
     server = _UnixServer(str(SOCKET_PATH), _Handler)
     server.state = state  # type: ignore[attr-defined]
 
@@ -434,7 +494,16 @@ def send(req: dict, timeout: float = CLIENT_TIMEOUT_SECONDS) -> tuple[bool, str]
 
 
 def say(
-    text: str, voice: str | None = None, speed: float | None = None, lang: str | None = None
+    text: str,
+    voice: str | None = None,
+    speed: float | None = None,
+    lang: str | None = None,
+    reference_audio: Path | None = None,
+    reference_text: str | None = None,
+    instruct: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
 ) -> tuple[bool, str]:
     req: dict = {"text": text}
     if voice is not None:
@@ -443,6 +512,15 @@ def say(
         req["speed"] = speed
     if lang is not None:
         req["lang"] = lang
+    optional = {
+        "reference_audio": str(reference_audio) if reference_audio is not None else None,
+        "reference_text": reference_text,
+        "instruct": instruct,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+    }
+    req.update({key: value for key, value in optional.items() if value is not None})
     return send(req)
 
 

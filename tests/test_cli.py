@@ -154,7 +154,18 @@ def _norm_ns(text=None, file=None, **overrides):
 
 class TestCmdSpeak:
     def test_with_text_calls_engine_speak(self, fake_stackvox):
-        rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="hello", out=None))
+        rc = cli._cmd_speak(
+            _ns(
+                voice="af_sarah",
+                speed=1.0,
+                lang="en-us",
+                backend="kokoro",
+                model_dir=None,
+                model_adapter=None,
+                text="hello",
+                out=None,
+            )
+        )
         assert rc == 0
         fake_stackvox.return_value.speak.assert_called_once_with("hello")
 
@@ -168,27 +179,70 @@ class TestCmdSpeak:
         sf_write = mocker.patch.object(cli.sf, "write")
         out = tmp_path / "out.wav"
 
-        rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="hi", out=out))
+        rc = cli._cmd_speak(
+            _ns(
+                voice="af_sarah",
+                speed=1.0,
+                lang="en-us",
+                backend="kokoro",
+                model_dir=None,
+                model_adapter=None,
+                text="hi",
+                out=out,
+            )
+        )
 
         assert rc == 0
         sf_write.assert_called_once()
         fake_stackvox.return_value.speak.assert_not_called()
 
     def test_blank_input_returns_error(self, fake_stackvox, capsys):
-        rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="   ", out=None))
+        rc = cli._cmd_speak(
+            _ns(
+                voice="af_sarah",
+                speed=1.0,
+                lang="en-us",
+                backend="kokoro",
+                model_dir=None,
+                model_adapter=None,
+                text="   ",
+                out=None,
+            )
+        )
         assert rc == 1
         assert "provide text" in capsys.readouterr().err
         fake_stackvox.return_value.speak.assert_not_called()
 
     def test_normalize_transforms_text_before_engine(self, fake_stackvox):
-        args = _norm_ns(text="# Heading", voice="af_sarah", speed=1.0, lang="en-us", out=None, normalize=True)
+        args = _norm_ns(
+            text="# Heading",
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            backend="kokoro",
+            model_dir=None,
+            model_adapter=None,
+            out=None,
+            normalize=True,
+        )
         rc = cli._cmd_speak(args)
         assert rc == 0
         fake_stackvox.return_value.speak.assert_called_once_with("Heading.")
 
     def test_no_normalize_leaves_text_untouched(self, fake_stackvox):
         # `normalize` absent from the namespace mirrors the flag being off.
-        rc = cli._cmd_speak(_ns(voice="af_sarah", speed=1.0, lang="en-us", text="# Heading", out=None))
+        rc = cli._cmd_speak(
+            _ns(
+                voice="af_sarah",
+                speed=1.0,
+                lang="en-us",
+                backend="kokoro",
+                model_dir=None,
+                model_adapter=None,
+                text="# Heading",
+                out=None,
+            )
+        )
         assert rc == 0
         fake_stackvox.return_value.speak.assert_called_once_with("# Heading")
 
@@ -238,21 +292,134 @@ class TestCmdSay:
 class TestCmdServe:
     def test_propagates_serve_args(self, mocker):
         serve = mocker.patch.object(cli.daemon, "serve")
-        rc = cli._cmd_serve(_ns(voice="bf_emma", speed=1.1, lang="en-gb"))
+        rc = cli._cmd_serve(
+            _ns(
+                voice="bf_emma", speed=1.1, lang="en-gb", backend="kokoro", model_dir=None, model_adapter=None
+            )
+        )
         assert rc == 0
-        serve.assert_called_once_with(voice="bf_emma", speed=1.1, lang="en-gb", custom_voices=BUILTIN_VOICES)
+        serve.assert_called_once_with(
+            voice="bf_emma",
+            speed=1.1,
+            lang="en-gb",
+            custom_voices=BUILTIN_VOICES,
+            backend="kokoro",
+            model_dir=None,
+            model_adapter=None,
+        )
 
     def test_voice_mix_default_starts_daemon_with_its_lang(self, mocker):
         serve = mocker.patch.object(cli.daemon, "serve")
-        rc = cli._cmd_serve(_ns(voice="ramona", speed=None, lang=None))
+        rc = cli._cmd_serve(
+            _ns(voice="ramona", speed=None, lang=None, backend="kokoro", model_dir=None, model_adapter=None)
+        )
         assert rc == 0
         assert serve.call_args.kwargs["lang"] == "en-gb"
 
     def test_returns_one_when_daemon_already_running(self, mocker, capsys):
         mocker.patch.object(cli.daemon, "serve", side_effect=RuntimeError("daemon already running"))
-        rc = cli._cmd_serve(_ns(voice="af_sarah", speed=1.0, lang="en-us"))
+        rc = cli._cmd_serve(
+            _ns(
+                voice="af_sarah",
+                speed=1.0,
+                lang="en-us",
+                backend="kokoro",
+                model_dir=None,
+                model_adapter=None,
+            )
+        )
         assert rc == 1
         assert "already running" in capsys.readouterr().err
+
+
+class TestMlxCli:
+    def test_speak_passes_backend_and_generation_options(self, fake_stackvox, tmp_path):
+        args = _ns(
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            backend="mlx",
+            model_dir=tmp_path,
+            model_adapter=None,
+            text="hello",
+            out=None,
+            reference_audio=tmp_path / "ref.wav",
+            reference_text="Ref.",
+            instruct=None,
+            temperature=0.5,
+            top_p=None,
+            top_k=None,
+        )
+
+        rc = cli._cmd_speak(args)
+
+        assert rc == 0
+        assert fake_stackvox.call_args.kwargs["backend"] == "mlx"
+        assert fake_stackvox.call_args.kwargs["model_dir"] == tmp_path
+        fake_stackvox.return_value.speak.assert_called_once_with(
+            "hello", reference_audio=tmp_path / "ref.wav", reference_text="Ref.", temperature=0.5
+        )
+
+    def test_say_forwards_generation_options_to_daemon(self, mocker, tmp_path):
+        say = mocker.patch.object(cli.daemon, "say", return_value=(True, "ok"))
+        args = _ns(
+            voice=None,
+            speed=None,
+            lang=None,
+            text="hi",
+            fallback_say=False,
+            reference_audio=tmp_path / "ref.wav",
+            reference_text="Ref.",
+            instruct="Warmly.",
+        )
+
+        assert cli._cmd_say(args) == 0
+        assert say.call_args.kwargs["reference_audio"] == tmp_path / "ref.wav"
+        assert say.call_args.kwargs["instruct"] == "Warmly."
+
+    def test_serve_passes_backend_and_generation_defaults(self, mocker, tmp_path):
+        serve = mocker.patch.object(cli.daemon, "serve")
+        args = _ns(
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            backend="mlx",
+            model_dir=tmp_path,
+            model_adapter=None,
+            top_k=12,
+        )
+
+        assert cli._cmd_serve(args) == 0
+        serve.assert_called_once_with(
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            custom_voices=BUILTIN_VOICES,
+            backend="mlx",
+            model_dir=tmp_path,
+            model_adapter=None,
+            top_k=12,
+        )
+
+    def test_mlx_backend_without_model_dir_is_a_usage_error(self, mocker, capsys):
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "speak", "--backend", "mlx", "hi"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        assert "requires --model-dir" in capsys.readouterr().err
+
+    def test_generation_options_on_kokoro_are_a_usage_error(self, mocker, capsys):
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "serve", "--instruct", "Warmly."])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        assert "require --backend mlx" in capsys.readouterr().err
+
+    def test_completion_lists_mlx_flags(self, capsys):
+        cli._cmd_completion(_ns(shell="bash"))
+        script = capsys.readouterr().out
+        assert "--backend" in script
+        assert "--reference-audio" in script
 
 
 class TestCmdStop:
@@ -624,3 +791,46 @@ class TestVoiceParams:
         rc = cli._cmd_say(_ns(voice="ramona", speed=1.1, lang=None, text="hi", fallback_say=False))
         assert rc == 0
         say.assert_called_once_with("hi", voice="ramona", speed=1.1, lang="en-gb")
+
+
+class TestModelAdapterCli:
+    def test_speak_passes_adapter_to_engine(self, fake_stackvox, tmp_path):
+        adapter = tmp_path / "adapter.py"
+        args = _ns(
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            backend="mlx",
+            model_dir=tmp_path,
+            model_adapter=adapter,
+            text="hi",
+            out=None,
+        )
+
+        assert cli._cmd_speak(args) == 0
+        assert fake_stackvox.call_args.kwargs["model_adapter"] == adapter
+
+    def test_model_load_error_prints_message_and_returns_one(self, fake_stackvox, capsys, tmp_path):
+        fake_stackvox.side_effect = cli.ModelLoadError("could not load; pass --model-adapter")
+        args = _ns(
+            voice="af_sarah",
+            speed=1.0,
+            lang="en-us",
+            backend="mlx",
+            model_dir=tmp_path,
+            model_adapter=None,
+            text="hi",
+            out=None,
+        )
+
+        rc = cli._cmd_speak(args)
+
+        assert rc == 1
+        assert capsys.readouterr().err == "[stackvox] could not load; pass --model-adapter\n"
+
+    def test_adapter_on_kokoro_is_a_usage_error(self, mocker, capsys):
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "speak", "--model-adapter", "a.py", "hi"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        assert "require --backend mlx" in capsys.readouterr().err

@@ -11,6 +11,7 @@ import threading
 import urllib.request
 from collections.abc import Generator, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import onnxruntime as ort
@@ -20,11 +21,19 @@ from kokoro_onnx import Kokoro
 from stackvox.paths import cache_dir as _default_cache_dir
 from stackvox.voices import BUILTIN_VOICES, VoiceMix, blend, resolve
 
+if TYPE_CHECKING:
+    from stackvox.mlx_backend import MlxBackend
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_VOICE = "af_sarah"
 DEFAULT_SPEED = 1.0
 DEFAULT_LANG = "en-us"
+DEFAULT_BACKEND = "kokoro"
+BACKENDS = ("kokoro", "mlx")
+# Per-request generation options only the MLX backend understands. Kokoro
+# rejects them rather than silently dropping a voice-cloning request.
+MLX_OPTIONS = ("reference_audio", "reference_text", "instruct", "temperature", "top_p", "top_k")
 
 # Streaming playback smoothing: play a touch of silence before the first word so
 # output-device warm-up (notably a Bluetooth codec/profile switch) lands during
@@ -161,7 +170,8 @@ class Stackvox:
     ``threads`` caps the ONNX Runtime thread pools, which otherwise size
     themselves from the host's core count and oversubscribe inside a container
     with a CPU quota. ``session_options`` replaces it when some other ORT
-    setting is wanted; the two are mutually exclusive.
+    setting is wanted; the two are mutually exclusive, and both apply to the
+    kokoro backend only.
     """
 
     def __init__(
@@ -173,14 +183,33 @@ class Stackvox:
         custom_voices: Mapping[str, VoiceMix] | None = None,
         threads: int | None = None,
         session_options: ort.SessionOptions | None = None,
+        backend: str = DEFAULT_BACKEND,
+        model_dir: Path | None = None,
+        model_adapter: Path | None = None,
     ) -> None:
         self.voice = voice
         self.speed = speed
         self.lang = lang
         self.custom_voices = dict(BUILTIN_VOICES if custom_voices is None else custom_voices)
         self._blends: dict[str, np.ndarray] = {}
-        model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
-        self._kokoro = _load_kokoro(model_path, voices_path, threads, session_options)
+        self.backend = backend
+        self.model_dir = model_dir
+        self.model_adapter = model_adapter
+        self._kokoro: Kokoro | None = None
+        self._mlx: MlxBackend | None = None
+        if backend == "kokoro":
+            model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
+            self._kokoro = _load_kokoro(model_path, voices_path, threads, session_options)
+        elif backend == "mlx":
+            if model_dir is None:
+                raise ValueError("mlx backend requires model_dir")
+            if threads is not None or session_options is not None:
+                raise ValueError("threads and session_options require the kokoro backend")
+            from stackvox.mlx_backend import MlxBackend
+
+            self._mlx = MlxBackend(model_dir, adapter=model_adapter)
+        else:
+            raise ValueError(f"unsupported backend: {backend}")
         self._stop_event = threading.Event()
         self._play_thread: threading.Thread | None = None
         self._stream: sd.OutputStream | None = None
@@ -192,8 +221,37 @@ class Stackvox:
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
+        reference_audio: Path | str | None = None,
+        reference_text: str | None = None,
+        instruct: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> tuple[np.ndarray, int]:
         """Return (samples, sample_rate) without playing."""
+        if self._mlx is not None:
+            return self._mlx.synthesize(
+                text,
+                speed=speed if speed is not None else self.speed,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+                instruct=instruct,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+            )
+        assert self._kokoro is not None
+        mlx_only = {
+            "reference_audio": reference_audio,
+            "reference_text": reference_text,
+            "instruct": instruct,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+        }
+        unsupported = [name for name, value in mlx_only.items() if value is not None]
+        if unsupported:
+            raise ValueError(f"{', '.join(unsupported)} require the mlx backend")
         params = resolve(
             voice,
             speed,
@@ -217,6 +275,12 @@ class Stackvox:
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
+        reference_audio: Path | str | None = None,
+        reference_text: str | None = None,
+        instruct: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> Generator[tuple[np.ndarray, int], None, None]:
         """Yield (samples, sample_rate) per sentence, as soon as each is synthesized.
 
@@ -233,17 +297,32 @@ class Stackvox:
         Chunks are sentences, and Kokoro trims each one it is given, so the
         concatenated stream runs a few percent shorter than ``synthesize`` on
         the same text — the inter-sentence silence goes with the trim. This is
-        the audio ``speak`` has always produced.
+        the audio ``speak`` has always produced. With the mlx backend the chunks
+        are the sentence-packed spans ``_stream_chunks`` returns, and the
+        throughput and trim figures above are Kokoro's.
 
         The stream is independent of ``speak`` and ``stop``, which own the shared
         output device: a consumer cancels its own stream by abandoning the
         generator (``break``, or ``close()``), which shuts the synthesis thread
         down with it.
         """
-        return self._synthesize_chunks(text, threading.Event(), voice=voice, speed=speed, lang=lang)
+        return self._synthesize_chunks(
+            text,
+            threading.Event(),
+            voice=voice,
+            speed=speed,
+            lang=lang,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            instruct=instruct,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
 
     def _style(self, name: str) -> str | np.ndarray:
         """A Kokoro voice id passes straight through; a mix becomes its blended style vector."""
+        assert self._kokoro is not None
         mix = self.custom_voices.get(name)
         if mix is None:
             return name
@@ -273,6 +352,12 @@ class Stackvox:
         speed: float | None = None,
         lang: str | None = None,
         blocking: bool = True,
+        reference_audio: Path | str | None = None,
+        reference_text: str | None = None,
+        instruct: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> None:
         """Synthesize and play through the system default output device.
 
@@ -286,12 +371,36 @@ class Stackvox:
         stop_event = threading.Event()
         self._stop_event = stop_event
         if blocking:
-            self._stream_play(text, stop_event, voice=voice, speed=speed, lang=lang)
+            self._stream_play(
+                text,
+                stop_event,
+                voice=voice,
+                speed=speed,
+                lang=lang,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+                instruct=instruct,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+            )
             return
 
         def _run() -> None:
             try:
-                self._stream_play(text, stop_event, voice=voice, speed=speed, lang=lang)
+                self._stream_play(
+                    text,
+                    stop_event,
+                    voice=voice,
+                    speed=speed,
+                    lang=lang,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                    instruct=instruct,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
             except Exception:
                 logger.exception("stackvox playback failed")
 
@@ -305,8 +414,14 @@ class Stackvox:
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
+        reference_audio: Path | str | None = None,
+        reference_text: str | None = None,
+        instruct: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> Generator[tuple[np.ndarray, int], None, None]:
-        """Yield (samples, sample_rate) per sentence, synthesizing ahead of the consumer.
+        """Yield (samples, sample_rate) per ``_stream_chunks`` chunk, synthesizing ahead.
 
         Kokoro batches by phoneme count (~510), so a whole paragraph synthesizes
         as one blob before any audio — the source of the lead-in lag. Splitting
@@ -321,7 +436,7 @@ class Stackvox:
         drains the queue until the producer exits, so abandoning a stream can
         never leave the synth thread parked on a put.
         """
-        sentences = _split_sentences(text)
+        sentences = self._stream_chunks(text)
         if not sentences:
             return
 
@@ -333,7 +448,20 @@ class Stackvox:
                 for sentence in sentences:
                     if stop_event.is_set():
                         break
-                    chunks.put(self.synthesize(sentence, voice=voice, speed=speed, lang=lang))
+                    chunks.put(
+                        self.synthesize(
+                            sentence,
+                            voice=voice,
+                            speed=speed,
+                            lang=lang,
+                            reference_audio=reference_audio,
+                            reference_text=reference_text,
+                            instruct=instruct,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                        )
+                    )
             except Exception as exc:  # hand the failure to the consumer to re-raise
                 chunks.put(exc)
             finally:
@@ -370,6 +498,12 @@ class Stackvox:
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
+        reference_audio: Path | str | None = None,
+        reference_text: str | None = None,
+        instruct: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> None:
         """Play each sentence through the output device as it becomes available.
 
@@ -378,7 +512,19 @@ class Stackvox:
         of the generator, so a blocking caller sees the error instead of silent
         success; ``stop_event`` cancels the stream.
         """
-        chunks = self._synthesize_chunks(text, stop_event, voice=voice, speed=speed, lang=lang)
+        chunks = self._synthesize_chunks(
+            text,
+            stop_event,
+            voice=voice,
+            speed=speed,
+            lang=lang,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            instruct=instruct,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
         stream: sd.OutputStream | None = None
         try:
             for samples, sample_rate in chunks:
@@ -417,6 +563,20 @@ class Stackvox:
                     logger.debug("stream teardown failed", exc_info=True)
             chunks.close()
 
+    def _stream_chunks(self, text: str) -> list[str]:
+        """Units of text synthesized and played one at a time.
+
+        Kokoro is cheap per call, so single sentences give the lowest latency.
+        MLX models often pay a fixed prompt cost (reference audio included) on
+        every generate call and keep prosody more natural across longer spans,
+        so they stream sentence-packed chunks instead.
+        """
+        if self._mlx is not None:
+            from stackvox.mlx_backend import split_long_text
+
+            return split_long_text(text)
+        return _split_sentences(text)
+
     def stop(self) -> None:
         """Stop any in-progress playback started with blocking=False."""
         self._stop_event.set()
@@ -429,7 +589,9 @@ class Stackvox:
         sd.stop()
 
     def voices(self) -> list[str]:
-        """Kokoro voice ids plus the names of custom voice mixes."""
+        """Kokoro voice ids plus the names of custom voice mixes; the mlx backend names none."""
+        if self._kokoro is None:
+            return []
         return sorted(set(self._kokoro.get_voices()) | set(self.custom_voices))
 
     def speak_sequence(
@@ -452,7 +614,7 @@ class Stackvox:
             kwargs = {k: v for k, v in line.items() if k != "text"}
             return self.synthesize(line["text"], **kwargs)
 
-        if concurrent and len(lines) > 1:
+        if concurrent and len(lines) > 1 and self.backend == "kokoro":
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(lines)) as pool:
