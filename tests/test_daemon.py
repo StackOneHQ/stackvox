@@ -77,6 +77,16 @@ class TestSendHelpers:
         daemon.say("hi")
         assert send.call_args.args[0] == {"text": "hi"}
 
+    def test_say_serializes_generation_options(self, mocker, tmp_path):
+        send = mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        daemon.say("hi", reference_audio=tmp_path / "ref.wav", reference_text="Ref.", top_k=10)
+        assert send.call_args.args[0] == {
+            "text": "hi",
+            "reference_audio": str(tmp_path / "ref.wav"),
+            "reference_text": "Ref.",
+            "top_k": 10,
+        }
+
     def test_stop_sends_command_stop(self, mocker):
         # _read_pid is mocked out so the wait-for-exit loop can't reach a real
         # daemon's pid file and block on a live process.

@@ -110,6 +110,36 @@ def test_missing_text_yields_error(server: ServerHarness):
     assert reply.startswith("err:")
 
 
+def test_generation_options_rejected_by_kokoro_daemon(server: ServerHarness):
+    server.tts.backend = "kokoro"
+    reply = _roundtrip(server.sock, json.dumps({"text": "hi", "instruct": "Warmly."}) + "\n")
+    assert reply == "err: generation options require a daemon started with --backend mlx"
+    server.tts.speak.assert_not_called()
+
+
+def test_generation_request_overrides_serve_defaults(server: ServerHarness):
+    import time
+
+    server.tts.backend = "mlx"
+    server.state.generation_defaults = {
+        "reference_audio": "/default.wav",
+        "reference_text": "Default.",
+        "top_k": 20,
+    }
+
+    reply = _roundtrip(server.sock, json.dumps({"text": "hi", "top_k": 5}) + "\n")
+
+    assert reply == "ok"
+    deadline = time.monotonic() + 1.0
+    while not server.tts.speak.call_args_list and time.monotonic() < deadline:
+        time.sleep(0.01)
+    kwargs = server.tts.speak.call_args.kwargs
+    assert kwargs["reference_audio"] == "/default.wav"
+    assert kwargs["reference_text"] == "Default."
+    assert kwargs["top_k"] == 5
+    assert kwargs["instruct"] is None
+
+
 def test_full_queue_returns_busy(server: ServerHarness):
     from stackvox import daemon
 
