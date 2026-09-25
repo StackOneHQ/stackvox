@@ -28,6 +28,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# MLX Audio is pre-1.0, so cap at the next minor; the floor is the version
+# verified end to end with stackvox's loader and generate() usage.
+mlx = [
+    "mlx-audio>=0.4.5,<0.5; platform_system=='Darwin' and platform_machine=='arm64'",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",
@@ -124,7 +129,7 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # Third-party deps without inline type stubs (or, for `tomli`, a 3.10-only
 # fallback that's not installed on the typechecker's Python).
-module = ["kokoro_onnx", "sounddevice", "soundfile", "tomli"]
+module = ["kokoro_onnx", "mlx_audio.*", "sounddevice", "soundfile", "tomli"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

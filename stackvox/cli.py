@@ -11,7 +11,8 @@ from pathlib import Path
 import soundfile as sf
 
 from stackvox import config, daemon, paths, updates
-from stackvox.engine import Stackvox
+from stackvox.engine import BACKENDS, DEFAULT_BACKEND, MLX_OPTIONS, Stackvox
+from stackvox.mlx_backend import ModelLoadError
 from stackvox.text import normalize_for_speech
 from stackvox.voices import VoiceMix, VoiceParams, resolve
 
@@ -58,11 +59,11 @@ _stackvox_completion() {
     fi
 
     case "$prev" in
-        --file|--out|--pronunciations)
+        --file|--out|--pronunciations|--reference-audio|--model-adapter)
             COMPREPLY=( $(compgen -f -- "$cur") )
             return 0
             ;;
-        --prefix)
+        --prefix|--model-dir)
             COMPREPLY=( $(compgen -d -- "$cur") )
             return 0
             ;;
@@ -72,6 +73,10 @@ _stackvox_completion() {
             ;;
         --lang)
             COMPREPLY=( $(compgen -W "en-us en-gb fr-fr it hi pt-br es ja zh" -- "$cur") )
+            return 0
+            ;;
+        --backend)
+            COMPREPLY=( $(compgen -W "kokoro mlx" -- "$cur") )
             return 0
             ;;
         --tables)
@@ -88,20 +93,21 @@ _stackvox_completion() {
             ;;
     esac
 
+    local gen_flags="--reference-audio --reference-text --instruct --temperature --top-p --top-k"
     local norm_flags="--no-markdown --no-dev-terms --no-abbreviations --no-filenames --pronunciations --no-expand-units --no-expand-numbers --no-pauses --tables --code-blocks --code-placeholder --strip-emoji --no-terminal-stops --locale"
 
     case "$subcommand" in
         speak)
-            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --out --normalize $norm_flags --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --out --backend --model-dir --model-adapter $gen_flags --normalize $norm_flags --help" -- "$cur") )
             ;;
         say)
-            COMPREPLY=( $(compgen -W "--voice --speed --lang --file --fallback-say --normalize $norm_flags --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --file $gen_flags --fallback-say --normalize $norm_flags --help" -- "$cur") )
             ;;
         normalize)
             COMPREPLY=( $(compgen -W "--file $norm_flags --help" -- "$cur") )
             ;;
         serve)
-            COMPREPLY=( $(compgen -W "--voice --speed --lang --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--voice --speed --lang --backend --model-dir --model-adapter $gen_flags --help" -- "$cur") )
             ;;
         completion)
             COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -130,7 +136,9 @@ WELCOME_LINES = [
 def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentParser:
     if defaults is None:
         defaults = config.Defaults()
-    parser = argparse.ArgumentParser(prog="stackvox", description="Kokoro-82M TTS")
+    parser = argparse.ArgumentParser(
+        prog="stackvox", description="Offline TTS with Kokoro or local MLX Audio models"
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     p_speak = sub.add_parser("speak", help="Synthesize and play in-process (loads model each run)")
@@ -138,12 +146,15 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
     p_speak.add_argument("text", nargs="?")
     p_speak.add_argument("--file", type=Path)
     p_speak.add_argument("--out", type=Path, help="Write wav instead of playing")
+    _add_backend_args(p_speak)
+    _add_generation_args(p_speak)
     _add_normalize_args(p_speak, with_switch=True)
 
     p_say = sub.add_parser("say", help="Send text to daemon (fast; fails if daemon not running)")
     _add_voice_args(p_say, defaults)
     p_say.add_argument("text", nargs="?")
     p_say.add_argument("--file", type=Path)
+    _add_generation_args(p_say)
     p_say.add_argument(
         "--fallback-say", action="store_true", help="Shell out to macOS `say` if daemon unreachable"
     )
@@ -159,6 +170,8 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
 
     p_serve = sub.add_parser("serve", help="Run the daemon in the foreground")
     _add_voice_args(p_serve, defaults)
+    _add_backend_args(p_serve)
+    _add_generation_args(p_serve)
 
     sub.add_parser("stop", help="Stop the running daemon")
     sub.add_parser("cancel", help="Stop the current utterance without shutting down the daemon")
@@ -210,6 +223,56 @@ def _voice_params(args: argparse.Namespace) -> tuple[VoiceParams, dict[str, Voic
         custom=custom,
     )
     return params, custom
+
+
+def _add_backend_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default=DEFAULT_BACKEND,
+        help="TTS backend (default: %(default)s). --voice/--lang apply to kokoro only",
+    )
+    parser.add_argument(
+        "--model-dir", type=Path, help="Local MLX Audio model directory (required for --backend mlx)"
+    )
+    parser.add_argument(
+        "--model-adapter",
+        type=Path,
+        help="Python script defining load(model_dir, load_model) for models that need custom loading",
+    )
+
+
+def _add_generation_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("generation options (require --backend mlx; unset = model default)")
+    group.add_argument("--reference-audio", type=Path, help="Voice-cloning reference audio")
+    group.add_argument("--reference-text", help="Transcript of --reference-audio")
+    group.add_argument("--instruct", help="Global delivery/style instruction")
+    group.add_argument("--temperature", type=float, help="Sampling temperature")
+    group.add_argument("--top-p", type=float, help="Nucleus sampling cutoff")
+    group.add_argument("--top-k", type=int, help="Top-k sampling cutoff")
+
+
+def _generation_kwargs(args: argparse.Namespace) -> dict:
+    """The generation options the user actually supplied, keyed as the engine expects."""
+    values = {key: getattr(args, key, None) for key in MLX_OPTIONS}
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def _validate_backend_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Fail fast on backend/option mismatches before loading a model.
+
+    ``say`` has no ``--backend``: the daemon decides, and rejects generation options
+    itself when it is running Kokoro.
+    """
+    backend = getattr(args, "backend", None)
+    if backend is None:
+        return
+    if backend == "mlx" and args.model_dir is None:
+        parser.error("--backend mlx requires --model-dir")
+    if backend != "mlx" and (_generation_kwargs(args) or args.model_adapter is not None):
+        parser.error(
+            "--model-adapter and generation options (--reference-audio, --instruct, ...) require --backend mlx"
+        )
 
 
 def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -> None:
@@ -383,13 +446,25 @@ def _cmd_speak(args: argparse.Namespace) -> int:
         if text is None:
             return 1
     params, custom = _voice_params(args)
-    tts = Stackvox(voice=params.voice, speed=params.speed, lang=params.lang, custom_voices=custom)
+    try:
+        tts = Stackvox(
+            voice=params.voice,
+            speed=params.speed,
+            lang=params.lang,
+            custom_voices=custom,
+            backend=args.backend,
+            model_dir=args.model_dir,
+            model_adapter=args.model_adapter,
+        )
+    except ModelLoadError as exc:
+        print(f"[stackvox] {exc}", file=sys.stderr)
+        return 1
     if args.out:
-        samples, sr = tts.synthesize(text)
+        samples, sr = tts.synthesize(text, **_generation_kwargs(args))
         sf.write(args.out, samples, sr)
         print(f"Wrote {args.out}", file=sys.stderr)
     else:
-        tts.speak(text)
+        tts.speak(text, **_generation_kwargs(args))
     return 0
 
 
@@ -403,7 +478,9 @@ def _cmd_say(args: argparse.Namespace) -> int:
         if text is None:
             return 1
     params, _ = _voice_params(args)
-    ok, resp = daemon.say(text, voice=params.voice, speed=params.speed, lang=params.lang)
+    ok, resp = daemon.say(
+        text, voice=params.voice, speed=params.speed, lang=params.lang, **_generation_kwargs(args)
+    )
     if ok:
         return 0
     if args.fallback_say:
@@ -432,7 +509,16 @@ def _cmd_normalize(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         params, custom = _voice_params(args)
-        daemon.serve(voice=params.voice, speed=params.speed, lang=params.lang, custom_voices=custom)
+        daemon.serve(
+            voice=params.voice,
+            speed=params.speed,
+            lang=params.lang,
+            custom_voices=custom,
+            backend=args.backend,
+            model_dir=args.model_dir,
+            model_adapter=args.model_adapter,
+            **_generation_kwargs(args),
+        )
     except RuntimeError as exc:
         print(f"[stackvox] {exc}", file=sys.stderr)
         return 1
@@ -597,6 +683,7 @@ def main() -> int:
 
     parser = _build_parser(config.load_defaults())
     args = parser.parse_args(argv)
+    _validate_backend_args(parser, args)
 
     if not args.cmd:
         parser.print_help()

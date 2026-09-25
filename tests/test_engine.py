@@ -405,3 +405,94 @@ class TestEnsureModels:
         assert download.call_count == 1
         url_arg, dest_arg = download.call_args.args
         assert dest_arg.name == "voices-v1.0.bin"
+
+
+@pytest.fixture
+def fake_mlx(mocker):
+    """Mock MlxBackend at its import site so no MLX model is loaded."""
+    from stackvox import mlx_backend
+
+    return mocker.patch.object(mlx_backend, "MlxBackend")
+
+
+class TestMlxBackend:
+    def test_requires_model_dir(self):
+        with pytest.raises(ValueError, match="requires model_dir"):
+            engine.Stackvox(backend="mlx")
+
+    def test_rejects_unknown_backend(self):
+        with pytest.raises(ValueError, match="unsupported backend"):
+            engine.Stackvox(backend="nope")
+
+    def test_does_not_load_kokoro(self, fake_mlx, fake_ensure_models, tmp_path):
+        engine.Stackvox(backend="mlx", model_dir=tmp_path)
+        fake_ensure_models.assert_not_called()
+        fake_mlx.assert_called_once_with(tmp_path, adapter=None)
+
+    def test_synthesize_routes_generation_options(self, fake_mlx, tmp_path):
+        fake_mlx.return_value.synthesize.return_value = (np.zeros(4, dtype=np.float32), 44100)
+        tts = engine.Stackvox(backend="mlx", model_dir=tmp_path, speed=1.1)
+
+        result = tts.synthesize("hi", reference_audio="ref.wav", reference_text="Ref.", top_k=10)
+
+        assert result[1] == 44100
+        fake_mlx.return_value.synthesize.assert_called_once_with(
+            "hi",
+            speed=1.1,
+            reference_audio="ref.wav",
+            reference_text="Ref.",
+            instruct=None,
+            temperature=None,
+            top_p=None,
+            top_k=10,
+        )
+
+    def test_voices_is_empty(self, fake_mlx, tmp_path):
+        assert engine.Stackvox(backend="mlx", model_dir=tmp_path).voices() == []
+
+    def test_streams_mlx_chunks_not_single_sentences(self, fake_mlx, fake_audio, tmp_path, mocker):
+        from stackvox import mlx_backend
+
+        fake_mlx.return_value.synthesize.return_value = (np.zeros(4, dtype=np.float32), 44100)
+        mocker.patch.object(mlx_backend, "split_long_text", return_value=["chunk one.", "chunk two."])
+        tts = engine.Stackvox(backend="mlx", model_dir=tmp_path)
+
+        tts.speak("One. Two. Three.")
+
+        texts = [call.args[0] for call in fake_mlx.return_value.synthesize.call_args_list]
+        assert texts == ["chunk one.", "chunk two."]
+
+    def test_speak_sequence_synthesizes_serially(self, fake_mlx, fake_audio, tmp_path, mocker):
+        fake_mlx.return_value.synthesize.return_value = (np.zeros(4, dtype=np.float32), 44100)
+        pool = mocker.patch("concurrent.futures.ThreadPoolExecutor")
+        tts = engine.Stackvox(backend="mlx", model_dir=tmp_path)
+
+        tts.speak_sequence([{"text": "a"}, {"text": "b"}])
+
+        pool.assert_not_called()
+        assert fake_mlx.return_value.synthesize.call_count == 2
+
+
+class TestKokoroRejectsGenerationOptions:
+    @pytest.mark.parametrize(
+        "option",
+        [
+            {"reference_audio": "ref.wav"},
+            {"reference_text": "Ref."},
+            {"instruct": "Warmly."},
+            {"temperature": 0.5},
+            {"top_p": 0.5},
+            {"top_k": 5},
+        ],
+    )
+    def test_synthesize_raises(self, fake_kokoro, option):
+        tts = engine.Stackvox()
+        with pytest.raises(ValueError, match="require the mlx backend"):
+            tts.synthesize("hi", **option)
+        fake_kokoro.return_value.create.assert_not_called()
+
+
+def test_mlx_backend_receives_model_adapter(fake_mlx, tmp_path):
+    adapter = tmp_path / "adapter.py"
+    engine.Stackvox(backend="mlx", model_dir=tmp_path, model_adapter=adapter)
+    fake_mlx.assert_called_once_with(tmp_path, adapter=adapter)
