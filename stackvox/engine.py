@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import sounddevice as sd
 from kokoro_onnx import Kokoro
 
 from stackvox.paths import cache_dir as _default_cache_dir
+from stackvox.voices import BUILTIN_VOICES, VoiceMix, blend, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,11 @@ class Stackvox:
     Example:
         tts = Stackvox(voice="af_bella")
         tts.speak("Hello world")
+
+    ``custom_voices`` maps names to Kokoro voice mixes (see ``stackvox.voices``)
+    and defaults to the built-in ones. A mix's own lang and speed beat the
+    ``lang`` and ``speed`` given here, which act as defaults; pass them per call
+    to override a mix.
     """
 
     def __init__(
@@ -112,10 +119,13 @@ class Stackvox:
         speed: float = DEFAULT_SPEED,
         lang: str = DEFAULT_LANG,
         cache_dir: Path | None = None,
+        custom_voices: Mapping[str, VoiceMix] | None = None,
     ) -> None:
         self.voice = voice
         self.speed = speed
         self.lang = lang
+        self.custom_voices = dict(BUILTIN_VOICES if custom_voices is None else custom_voices)
+        self._blends: dict[str, np.ndarray] = {}
         model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
         self._kokoro = Kokoro(str(model_path), str(voices_path))
         self._stop_event = threading.Event()
@@ -131,13 +141,31 @@ class Stackvox:
         lang: str | None = None,
     ) -> tuple[np.ndarray, int]:
         """Return (samples, sample_rate) without playing."""
+        params = resolve(
+            voice,
+            speed,
+            lang,
+            default_voice=self.voice,
+            default_speed=self.speed,
+            default_lang=self.lang,
+            custom=self.custom_voices,
+        )
         samples, sample_rate = self._kokoro.create(
             text,
-            voice=voice or self.voice,
-            speed=speed if speed is not None else self.speed,
-            lang=lang or self.lang,
+            voice=self._style(params.voice),
+            speed=params.speed,
+            lang=params.lang,
         )
         return samples, sample_rate
+
+    def _style(self, name: str) -> str | np.ndarray:
+        """A Kokoro voice id passes straight through; a mix becomes its blended style vector."""
+        mix = self.custom_voices.get(name)
+        if mix is None:
+            return name
+        if name not in self._blends:
+            self._blends[name] = blend(name, mix, self._kokoro.get_voice_style, self._kokoro.get_voices())
+        return self._blends[name]
 
     def _cancel_active(self) -> None:
         """Supersede any in-progress stream so a new ``speak`` starts clean.
@@ -291,7 +319,8 @@ class Stackvox:
         sd.stop()
 
     def voices(self) -> list[str]:
-        return sorted(self._kokoro.get_voices())
+        """Kokoro voice ids plus the names of custom voice mixes."""
+        return sorted(set(self._kokoro.get_voices()) | set(self.custom_voices))
 
     def speak_sequence(
         self,

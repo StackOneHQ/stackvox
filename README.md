@@ -97,7 +97,7 @@ speed = 1.1
 lang = "en-gb"
 ```
 
-CLI flags always win over config values, and config values always win over the built-in defaults. A missing file is fine — built-ins apply. A malformed file logs a warning and is ignored.
+CLI flags always win over config values, and config values always win over the built-in defaults. The one thing between a flag and the config is a [voice mix](#voice-mixes)'s own `lang` and `speed`, so `--voice chip` stays transatlantic even when `[defaults]` sets `lang = "en-us"`. A missing file is fine — built-ins apply. A malformed file logs a warning and is ignored.
 
 ## Daemon mode
 
@@ -177,7 +177,34 @@ Kokoro ships voices across several languages. Voice prefix encodes gender + lang
 | `jf_*`, `jm_*` | Japanese         | `jf_alpha`               |
 | `zf_*`, `zm_*` | Mandarin Chinese | `zf_xiaoxiao`            |
 
-Run `stackvox voices` for the authoritative list.
+Run `stackvox voices` for the authoritative list, which includes the voice mixes below.
+
+### Voice mixes
+
+Each Kokoro voice is a style vector, so a weighted blend of several makes a new voice between them. A mix is named, and the name works anywhere a voice id does: `--voice`, `Stackvox(voice=...)`, and the daemon's socket protocol. It also carries the `lang` and `speed` it was tuned with, which apply unless you pass your own.
+
+Two ship built in, a transatlantic newsreader pair (American delivery, British vowels):
+
+| Name     | Mix                                                   | lang    | speed |
+| -------- | ----------------------------------------------------- | ------- | ----- |
+| `chip`   | `am_liam` 0.6, `bm_daniel` 0.4                        | `en-gb` | 1.0   |
+| `ramona` | `af_aoede` 0.5, `af_bella` 0.2, `bf_emma` 0.3         | `en-gb` | 1.0   |
+
+```bash
+stackvox speak --voice chip "Good evening, and welcome to the news."
+stackvox say --voice ramona "Thanks Chip."
+```
+
+Define your own in the config file. Weights needn't sum to 1, and a table named after a built-in replaces it:
+
+```toml
+[voices.narrator]
+mix = { am_michael = 0.6, bm_george = 0.4 }
+lang = "en-gb"   # optional
+speed = 1.0      # optional
+```
+
+The daemon reads mixes when it starts, so restart it (`stackvox stop`, then `stackvox serve`) after editing them.
 
 ## Architecture
 

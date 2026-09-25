@@ -6,6 +6,7 @@ import logging
 
 from stackvox import config
 from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE
+from stackvox.voices import BUILTIN_VOICES, VoiceMix
 
 
 class TestConfigPath:
@@ -91,9 +92,11 @@ class TestCLIPicksUpConfig:
         assert cli.main() == 0
         args = speak.call_args.args[0]
         assert args.voice == "bf_emma"
-        assert args.speed == 1.3
+        # Speed and lang resolve per command, so a voice mix can sit between flag and config.
+        params, _ = cli._voice_params(args)
+        assert params.speed == 1.3
         # Lang wasn't in config; should fall through to built-in default.
-        assert args.lang == DEFAULT_LANG
+        assert params.lang == DEFAULT_LANG
 
     def test_explicit_flag_overrides_config(self, mocker, monkeypatch, tmp_path):
         path = tmp_path / "config.toml"
@@ -108,3 +111,46 @@ class TestCLIPicksUpConfig:
 
         assert cli.main() == 0
         assert speak.call_args.args[0].voice == "af_sarah"
+
+
+class TestLoadVoices:
+    def test_missing_file_returns_built_in_voices(self, tmp_path):
+        assert config.load_voices(tmp_path / "absent.toml") == BUILTIN_VOICES
+
+    def test_table_adds_a_named_mix(self, tmp_path):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[voices.narrator]\nmix = { am_michael = 0.6, bm_george = 0.4 }\nlang = "en-gb"\nspeed = 1\n',
+            encoding="utf-8",
+        )
+        voices = config.load_voices(path)
+        assert voices["narrator"] == VoiceMix(
+            mix=(("am_michael", 0.6), ("bm_george", 0.4)), lang="en-gb", speed=1.0
+        )
+        assert voices["chip"] == BUILTIN_VOICES["chip"]
+
+    def test_table_with_a_built_in_name_replaces_it(self, tmp_path):
+        path = tmp_path / "config.toml"
+        path.write_text("[voices.chip]\nmix = { am_adam = 1 }\n", encoding="utf-8")
+        assert config.load_voices(path)["chip"] == VoiceMix(mix=(("am_adam", 1.0),))
+
+    def test_invalid_table_is_skipped_with_a_warning(self, tmp_path, caplog):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[voices.noweights]\nlang = "en-gb"\n[voices.negative]\nmix = { am_adam = -1 }\n'
+            "[voices.ok]\nmix = { am_adam = 1 }\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            voices = config.load_voices(path)
+        assert "noweights" not in voices
+        assert "negative" not in voices
+        assert "ok" in voices
+        assert "[voices.noweights]" in caplog.text
+
+    def test_voices_section_must_be_a_table(self, tmp_path, caplog):
+        path = tmp_path / "config.toml"
+        path.write_text('voices = "chip"\n', encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_voices(path) == BUILTIN_VOICES
+        assert "[voices] must be a table" in caplog.text
