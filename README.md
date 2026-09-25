@@ -204,8 +204,10 @@ Generation options (`--reference-audio`, `--reference-text`, `--instruct`,
 model's own defaults apply otherwise; which ones a model honours depends on
 the model. They are rejected with an error unless the `mlx` backend is in use,
 both by `speak` and by a daemon running Kokoro. `--voice` and `--lang` apply to
-Kokoro only. Playback streams in sentence-packed chunks of up to ~400
-characters, so the first audio arrives once the first chunk is generated.
+Kokoro only. Playback streams in chunks of about two sentences (up to ~170
+characters), so the first audio arrives once the first chunk is generated;
+short chunks also stop models drifting off-script on long text. Models slower
+than real time will pause between chunks.
 
 ### Model adapters
 
