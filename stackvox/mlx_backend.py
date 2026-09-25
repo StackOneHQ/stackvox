@@ -9,22 +9,27 @@ model-specific code. See ``load_adapter`` for the adapter contract.
 from __future__ import annotations
 
 import importlib.util
+import queue
 import re
+import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
 
 # Adapters typically swap class attributes on third-party modules, which is
 # process-global; serialise loads so two engines can't interleave the swaps.
 _LOAD_LOCK = Lock()
-# Long inputs are generated in sentence-packed chunks this size or smaller:
-# small enough to stay under typical per-call token limits and give prompt
-# first audio when streaming, large enough to keep prosody natural.
-CHUNK_CHARS = 400
+# Long inputs are generated in sentence-packed chunks this size or smaller,
+# roughly two sentences. Autoregressive TTS models tend to drift on long
+# prompts, skipping or inventing speech; in testing, 400-char chunks lost a
+# quarter to a third of the text while ~170 kept all of it. Smaller chunks also
+# bring the first streamed audio forward.
+CHUNK_CHARS = 170
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 
 # Cap on how much of an underlying error is echoed; MLX Audio's messages can
@@ -33,6 +38,7 @@ _ERROR_SUMMARY_CHARS = 200
 
 LoadModel = Callable[[Path], Any]
 Adapter = Callable[[Path, LoadModel], Any]
+_Result = TypeVar("_Result")
 
 
 class ModelLoadError(RuntimeError):
@@ -161,15 +167,49 @@ def _load_audio(path: Path, sample_rate: int) -> Any:
     return load_audio(str(path), sample_rate=sample_rate)
 
 
+class _MlxThread:
+    """A single daemon thread that runs every MLX call for one backend.
+
+    MLX binds GPU streams to threads: a model loaded on one thread fails with
+    "There is no Stream(gpu, 0) in current thread" when it first generates on
+    another, which is exactly what streaming playback and the daemon worker do.
+    Funnelling load and generation through one thread avoids that and also
+    serialises access to a model that isn't safe to call concurrently. A daemon
+    thread (rather than an executor) never holds up interpreter exit.
+    """
+
+    def __init__(self) -> None:
+        self._jobs: queue.Queue[tuple[Callable[[], Any], Future[Any]]] = queue.Queue()
+        self.thread = threading.Thread(target=self._run, daemon=True, name="stackvox-mlx")
+        self.thread.start()
+
+    def _run(self) -> None:
+        while True:
+            job, future = self._jobs.get()
+            try:
+                future.set_result(job())
+            except BaseException as exc:  # hand every failure back to the caller
+                future.set_exception(exc)
+
+    def call(self, job: Callable[[], _Result]) -> _Result:
+        future: Future[_Result] = Future()
+        self._jobs.put((job, future))
+        return future.result()
+
+
 class MlxBackend:
-    """Load one local MLX Audio model and expose stackvox's synthesis contract."""
+    """Load one local MLX Audio model and expose stackvox's synthesis contract.
+
+    Safe to call from any thread: all MLX work runs on the backend's own thread.
+    """
 
     def __init__(self, model_dir: Path, adapter: Path | None = None) -> None:
         model_dir = model_dir.expanduser().resolve()
         if not model_dir.is_dir():
             raise ModelLoadError(f"model directory not found: {model_dir}")
         self.model_dir = model_dir
-        self._model: Any = _load_model(model_dir, adapter)
+        self._mlx_thread = _MlxThread()
+        self._model: Any = self._mlx_thread.call(lambda: _load_model(model_dir, adapter))
 
     def synthesize(
         self,
@@ -188,16 +228,27 @@ class MlxBackend:
         if (reference_audio is None) != (reference_text is None):
             raise ValueError("voice cloning requires both reference_audio and reference_text")
 
-        kwargs: dict[str, Any] = {"speed": speed, "verbose": False}
+        audio_path = None
         if reference_audio is not None:
             audio_path = Path(reference_audio).expanduser().resolve()
             if not audio_path.is_file():
                 raise FileNotFoundError(f"reference audio not found: {audio_path}")
-            kwargs["ref_audio"] = _load_audio(audio_path, self._model.sample_rate)
-            kwargs["ref_text"] = reference_text
         optional = {"instruct": instruct, "temperature": temperature, "top_p": top_p, "top_k": top_k}
+        kwargs: dict[str, Any] = {"speed": speed, "verbose": False}
         kwargs.update({key: value for key, value in optional.items() if value is not None})
+        return self._mlx_thread.call(lambda: self._generate(text, kwargs, audio_path, reference_text))
 
+    def _generate(
+        self, text: str, kwargs: dict[str, Any], audio_path: Path | None, reference_text: str | None
+    ) -> tuple[np.ndarray, int]:
+        """Runs on the MLX thread: decoding the reference and converting results
+        to NumPy both evaluate MLX arrays, so they belong here too."""
+        if audio_path is not None:
+            kwargs = {
+                **kwargs,
+                "ref_audio": _load_audio(audio_path, self._model.sample_rate),
+                "ref_text": reference_text,
+            }
         results = []
         for chunk in split_long_text(text):
             results.extend(self._model.generate(text=chunk, **kwargs))

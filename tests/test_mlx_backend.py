@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -273,3 +274,62 @@ class TestSplitLongText:
         chunks = mlx_backend.split_long_text("word " * 200, limit=50)
         assert all(len(chunk) <= 50 for chunk in chunks)
         assert " ".join(chunks).split() == ["word"] * 200
+
+
+class TestMlxThread:
+    def test_load_and_generation_share_one_thread_across_callers(self, mocker, tmp_path):
+        seen = []
+        model = mocker.MagicMock(sample_rate=44100)
+
+        def record(name):
+            def side_effect(*args, **kwargs):
+                seen.append((name, threading.current_thread().name))
+                return model if name == "load" else object()
+
+            return side_effect
+
+        def generate(**kwargs):
+            seen.append(("generate", threading.current_thread().name))
+            return iter([SimpleNamespace(audio=np.ones(1), sample_rate=44100)])
+
+        model.generate.side_effect = generate
+        mocker.patch.object(mlx_backend, "_load_model", side_effect=record("load"))
+        mocker.patch.object(mlx_backend, "_load_audio", side_effect=record("load_audio"))
+        reference = tmp_path / "voice.wav"
+        reference.touch()
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        engine = mlx_backend.MlxBackend(model_dir)
+
+        callers = [
+            threading.Thread(
+                target=engine.synthesize,
+                args=("hello",),
+                kwargs={"reference_audio": reference, "reference_text": "Ref."},
+            )
+            for _ in range(3)
+        ]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join()
+        engine.synthesize("from the main thread")
+
+        assert {thread for _, thread in seen} == {"stackvox-mlx"}
+        assert [name for name, _ in seen].count("generate") == 4
+
+    def test_generation_errors_reach_the_caller(self, backend):
+        engine, model = backend
+        model.generate.side_effect = RuntimeError("gpu fell over")
+        with pytest.raises(RuntimeError, match="gpu fell over"):
+            engine.synthesize("hello")
+
+    def test_load_errors_reach_the_caller(self, mocker, tmp_path):
+        mocker.patch.object(mlx_backend, "_load_model", side_effect=mlx_backend.ModelLoadError("bad model"))
+        with pytest.raises(mlx_backend.ModelLoadError, match="bad model"):
+            mlx_backend.MlxBackend(tmp_path)
+
+    def test_chunk_limit_keeps_about_two_sentences(self):
+        sentence = "This is sentence number one of a longer passage used to check chunking."
+        chunks = mlx_backend.split_long_text(" ".join([sentence] * 6))
+        assert all(chunk.count(".") <= 2 for chunk in chunks)
