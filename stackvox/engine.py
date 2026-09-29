@@ -8,7 +8,7 @@ import re
 import sys
 import threading
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Generator, Iterator, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -158,6 +158,37 @@ class Stackvox:
         )
         return samples, sample_rate
 
+    def synthesize_stream(
+        self,
+        text: str,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
+    ) -> Iterator[tuple[np.ndarray, int]]:
+        """Yield (samples, sample_rate) per sentence, as soon as each is synthesized.
+
+        The streaming counterpart to ``synthesize``: time to first chunk is one
+        sentence rather than the whole text, which is what a caller encoding and
+        sending audio as it arrives (an HTTP speech endpoint, say) wants. The
+        samples are raw. The lead-in silence and fade-in that ``speak`` applies
+        are smoothing for a physical output device, not part of the audio.
+
+        Per-sentence batching costs total throughput — roughly 50% more wall
+        clock over the whole text than one ``synthesize`` call — so this is the
+        right call only when time to first chunk is what matters.
+
+        Chunks are sentences, and Kokoro trims each one it is given, so the
+        concatenated stream runs a few percent shorter than ``synthesize`` on
+        the same text — the inter-sentence silence goes with the trim. This is
+        the audio ``speak`` has always produced.
+
+        The stream is independent of ``speak`` and ``stop``, which own the shared
+        output device: a consumer cancels its own stream by abandoning the
+        generator (``break``, or ``close()``), which shuts the synthesis thread
+        down with it.
+        """
+        return self._synthesize_chunks(text, threading.Event(), voice=voice, speed=speed, lang=lang)
+
     def _style(self, name: str) -> str | np.ndarray:
         """A Kokoro voice id passes straight through; a mix becomes its blended style vector."""
         mix = self.custom_voices.get(name)
@@ -214,26 +245,28 @@ class Stackvox:
         self._play_thread = threading.Thread(target=_run, daemon=True, name="stackvox-play")
         self._play_thread.start()
 
-    def _stream_play(
+    def _synthesize_chunks(
         self,
         text: str,
         stop_event: threading.Event,
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
-    ) -> None:
-        """Synthesize sentence by sentence and play each as it is ready.
+    ) -> Generator[tuple[np.ndarray, int], None, None]:
+        """Yield (samples, sample_rate) per sentence, synthesizing ahead of the consumer.
 
         Kokoro batches by phoneme count (~510), so a whole paragraph synthesizes
         as one blob before any audio — the source of the lead-in lag. Splitting
-        into sentences ourselves means the first sentence (~0.2s to synthesize)
-        plays almost immediately. A producer thread synthesizes ahead into a
-        bounded queue while this thread plays, so later sentences are usually
-        ready by the time the previous one finishes.
+        into sentences ourselves means the first chunk (~0.2s to synthesize) is
+        ready almost immediately. A producer thread synthesizes ahead into a
+        bounded queue while the consumer works through what is already done, so
+        later sentences are usually ready by the time they are asked for.
 
-        A synthesis failure is re-raised rather than swallowed, so a blocking
-        caller sees the error instead of silent success; ``stop_event`` cancels
-        the stream between sentences.
+        A synthesis failure is re-raised into the consumer rather than swallowed,
+        so a caller sees the error instead of a stream that just stops early;
+        ``stop_event`` cancels between sentences. Closing the generator early
+        drains the queue until the producer exits, so abandoning a stream can
+        never leave the synth thread parked on a put.
         """
         sentences = _split_sentences(text)
         if not sentences:
@@ -256,7 +289,6 @@ class Stackvox:
         producer = threading.Thread(target=_produce, daemon=True, name="stackvox-synth")
         producer.start()
         error: Exception | None = None
-        stream: sd.OutputStream | None = None
         try:
             while not stop_event.is_set():
                 item = chunks.get()
@@ -265,7 +297,38 @@ class Stackvox:
                 if isinstance(item, Exception):
                     error = item
                     break
-                samples, sample_rate = item
+                yield item
+        finally:
+            # Stop the producer and keep draining so it can never stay parked on
+            # a full queue — that's what guarantees the synth thread always exits.
+            stop_event.set()
+            while producer.is_alive():
+                try:
+                    chunks.get_nowait()
+                except queue.Empty:
+                    producer.join(timeout=0.05)
+        if error is not None:
+            raise error
+
+    def _stream_play(
+        self,
+        text: str,
+        stop_event: threading.Event,
+        voice: str | None = None,
+        speed: float | None = None,
+        lang: str | None = None,
+    ) -> None:
+        """Play each sentence through the output device as it becomes available.
+
+        Consuming ``_synthesize_chunks`` is what makes the first sentence play
+        while the rest are still synthesizing. A synthesis failure propagates out
+        of the generator, so a blocking caller sees the error instead of silent
+        success; ``stop_event`` cancels the stream.
+        """
+        chunks = self._synthesize_chunks(text, stop_event, voice=voice, speed=speed, lang=lang)
+        stream: sd.OutputStream | None = None
+        try:
+            for samples, sample_rate in chunks:
                 samples = np.ascontiguousarray(samples, dtype="float32")
                 if stream is None:
                     # One stream for the whole utterance: writing chunks into it is
@@ -288,6 +351,9 @@ class Stackvox:
                         break  # aborted by stop(); expected
                     raise
         finally:
+            # Release the output device before draining the synth thread, so a
+            # stop() doesn't hold the device open for however long the in-flight
+            # sentence still takes to synthesize.
             with self._stream_lock:
                 self._stream = None
             if stream is not None:
@@ -296,16 +362,7 @@ class Stackvox:
                     stream.close()
                 except Exception:
                     logger.debug("stream teardown failed", exc_info=True)
-            # Stop the producer and keep draining so it can never stay parked on
-            # a full queue — that's what guarantees the synth thread always exits.
-            stop_event.set()
-            while producer.is_alive():
-                try:
-                    chunks.get_nowait()
-                except queue.Empty:
-                    producer.join(timeout=0.05)
-        if error is not None:
-            raise error
+            chunks.close()
 
     def stop(self) -> None:
         """Stop any in-progress playback started with blocking=False."""
@@ -402,3 +459,13 @@ def synthesize(
 ) -> tuple[np.ndarray, int]:
     """One-shot synthesis. Returns (samples, sample_rate)."""
     return _get_default().synthesize(text, voice=voice, speed=speed, lang=lang)
+
+
+def synthesize_stream(
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    lang: str = DEFAULT_LANG,
+) -> Iterator[tuple[np.ndarray, int]]:
+    """One-shot streaming synthesis. Yields (samples, sample_rate) per sentence."""
+    return _get_default().synthesize_stream(text, voice=voice, speed=speed, lang=lang)
