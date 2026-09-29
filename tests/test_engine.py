@@ -35,6 +35,12 @@ def fake_kokoro(mocker, fake_ensure_models):
 
 
 @pytest.fixture
+def fake_ort(mocker):
+    """Mock onnxruntime so a session can be built without loading a real model."""
+    return mocker.patch.object(engine, "ort")
+
+
+@pytest.fixture
 def fake_audio(mocker):
     """Mock the sounddevice surface used by Stackvox (streaming + speak_sequence)."""
     mocker.patch.object(engine.sd, "OutputStream")
@@ -68,6 +74,61 @@ class TestStackvoxInit:
         mocker.patch.object(engine, "_default_cache_dir", return_value=default)
         engine.Stackvox()
         fake_ensure_models.assert_called_once_with(default)
+
+
+class TestSessionOptions:
+    def test_default_construction_leaves_the_session_to_kokoro(self, fake_kokoro, fake_ort):
+        tts = engine.Stackvox()
+
+        fake_kokoro.assert_called_once()
+        fake_ort.InferenceSession.assert_not_called()
+        assert tts._kokoro is fake_kokoro.return_value
+
+    def test_threads_caps_both_onnx_thread_pools(self, fake_kokoro, fake_ort, fake_ensure_models):
+        model_path, voices_path = fake_ensure_models.return_value
+
+        tts = engine.Stackvox(threads=4)
+
+        options = fake_ort.SessionOptions.return_value
+        assert options.intra_op_num_threads == 4
+        assert options.inter_op_num_threads == 4
+        assert fake_ort.InferenceSession.call_args.args == (str(model_path),)
+        assert fake_ort.InferenceSession.call_args.kwargs["sess_options"] is options
+        # from_session, not the plain constructor, is what honours our session.
+        fake_kokoro.assert_not_called()
+        fake_kokoro.from_session.assert_called_once_with(
+            fake_ort.InferenceSession.return_value, str(voices_path)
+        )
+        assert tts._kokoro is fake_kokoro.from_session.return_value
+
+    def test_session_options_are_passed_through_untouched(self, fake_kokoro, fake_ort, mocker):
+        options = mocker.Mock()
+
+        engine.Stackvox(session_options=options)
+
+        assert fake_ort.InferenceSession.call_args.kwargs["sess_options"] is options
+        fake_ort.SessionOptions.assert_not_called()
+
+    def test_threads_and_session_options_together_is_rejected(self, fake_kokoro, fake_ort, mocker):
+        with pytest.raises(ValueError, match="not both"):
+            engine.Stackvox(threads=4, session_options=mocker.Mock())
+
+    def test_session_defaults_to_the_cpu_provider(self, fake_kokoro, fake_ort, monkeypatch):
+        # Building the session ourselves means making the provider choice
+        # Kokoro.__init__ would have made, or a thread cap silently moves the
+        # model onto a different provider.
+        monkeypatch.delenv("ONNX_PROVIDER", raising=False)
+
+        engine.Stackvox(threads=2)
+
+        assert fake_ort.InferenceSession.call_args.kwargs["providers"] == ["CPUExecutionProvider"]
+
+    def test_session_follows_the_onnx_provider_env_var(self, fake_kokoro, fake_ort, monkeypatch):
+        monkeypatch.setenv("ONNX_PROVIDER", "CUDAExecutionProvider")
+
+        engine.Stackvox(threads=2)
+
+        assert fake_ort.InferenceSession.call_args.kwargs["providers"] == ["CUDAExecutionProvider"]
 
 
 class TestSynthesize:

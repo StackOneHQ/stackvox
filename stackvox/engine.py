@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import re
 import sys
@@ -12,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
+import onnxruntime as ort
 import sounddevice as sd
 from kokoro_onnx import Kokoro
 
@@ -79,6 +81,47 @@ def _ensure_models(cache_dir: Path) -> tuple[Path, Path]:
     return model_path, voices_path
 
 
+def _onnx_providers() -> list[str]:
+    """Pick execution providers the way ``Kokoro.__init__`` would.
+
+    ``Kokoro.from_session`` takes the session exactly as handed to it, so a
+    session we build ourselves has to make the provider choice that constructing
+    ``Kokoro`` directly would have made. Otherwise asking for a thread cap would
+    also silently change which provider runs the model. kokoro-onnx additionally
+    probes for its GPU extra, but it does so with ``find_spec("onnxruntime-gpu")``
+    — a distribution name, not an importable module — so that branch never fires
+    and there is nothing to mirror. ``ONNX_PROVIDER`` is the knob that works.
+    """
+    env_provider = os.getenv("ONNX_PROVIDER")
+    return [env_provider] if env_provider else ["CPUExecutionProvider"]
+
+
+def _load_kokoro(
+    model_path: Path,
+    voices_path: Path,
+    threads: int | None,
+    session_options: ort.SessionOptions | None,
+) -> Kokoro:
+    """Build the Kokoro engine, taking over session construction only when asked.
+
+    Left alone, ONNX Runtime sizes its thread pools from the host's core count.
+    Inside a container whose CPU quota is smaller than the machine that means
+    more threads contending for less CPU than the default assumed, which costs
+    throughput rather than buying it. ``threads`` caps the pools; passing
+    ``session_options`` instead hands over everything else ORT exposes.
+    """
+    if threads is not None and session_options is not None:
+        raise ValueError("pass threads or session_options, not both")
+    if threads is not None:
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = threads
+        session_options.inter_op_num_threads = threads
+    if session_options is None:
+        return Kokoro(str(model_path), str(voices_path))
+    session = ort.InferenceSession(str(model_path), sess_options=session_options, providers=_onnx_providers())
+    return Kokoro.from_session(session, str(voices_path))
+
+
 # Split after ., !, or ? that is followed by whitespace, and on newlines. The
 # whitespace requirement leaves decimals ("0.95") and mid-token dots
 # ("file.ts") intact, which is good enough for speech chunking.
@@ -111,6 +154,11 @@ class Stackvox:
     and defaults to the built-in ones. A mix's own lang and speed beat the
     ``lang`` and ``speed`` given here, which act as defaults; pass them per call
     to override a mix.
+
+    ``threads`` caps the ONNX Runtime thread pools, which otherwise size
+    themselves from the host's core count and oversubscribe inside a container
+    with a CPU quota. ``session_options`` replaces it when some other ORT
+    setting is wanted; the two are mutually exclusive.
     """
 
     def __init__(
@@ -120,6 +168,8 @@ class Stackvox:
         lang: str = DEFAULT_LANG,
         cache_dir: Path | None = None,
         custom_voices: Mapping[str, VoiceMix] | None = None,
+        threads: int | None = None,
+        session_options: ort.SessionOptions | None = None,
     ) -> None:
         self.voice = voice
         self.speed = speed
@@ -127,7 +177,7 @@ class Stackvox:
         self.custom_voices = dict(BUILTIN_VOICES if custom_voices is None else custom_voices)
         self._blends: dict[str, np.ndarray] = {}
         model_path, voices_path = _ensure_models(cache_dir or _default_cache_dir())
-        self._kokoro = Kokoro(str(model_path), str(voices_path))
+        self._kokoro = _load_kokoro(model_path, voices_path, threads, session_options)
         self._stop_event = threading.Event()
         self._play_thread: threading.Thread | None = None
         self._stream: sd.OutputStream | None = None
