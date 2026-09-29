@@ -8,7 +8,7 @@ import re
 import sys
 import threading
 import urllib.request
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Generator, Mapping
 from pathlib import Path
 
 import numpy as np
@@ -164,7 +164,7 @@ class Stackvox:
         voice: str | None = None,
         speed: float | None = None,
         lang: str | None = None,
-    ) -> Iterator[tuple[np.ndarray, int]]:
+    ) -> Generator[tuple[np.ndarray, int], None, None]:
         """Yield (samples, sample_rate) per sentence, as soon as each is synthesized.
 
         The streaming counterpart to ``synthesize``: time to first chunk is one
@@ -466,6 +466,6 @@ def synthesize_stream(
     voice: str = DEFAULT_VOICE,
     speed: float = DEFAULT_SPEED,
     lang: str = DEFAULT_LANG,
-) -> Iterator[tuple[np.ndarray, int]]:
+) -> Generator[tuple[np.ndarray, int], None, None]:
     """One-shot streaming synthesis. Yields (samples, sample_rate) per sentence."""
     return _get_default().synthesize_stream(text, voice=voice, speed=speed, lang=lang)
