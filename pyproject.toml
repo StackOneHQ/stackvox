@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "kokoro-onnx>=0.4.0",
+    "onnxruntime>=1.20.1",
     "soundfile>=0.12.1",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
@@ -124,7 +125,7 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # Third-party deps without inline type stubs (or, for `tomli`, a 3.10-only
 # fallback that's not installed on the typechecker's Python).
-module = ["kokoro_onnx", "sounddevice", "soundfile", "tomli"]
+module = ["kokoro_onnx", "onnxruntime", "sounddevice", "soundfile", "tomli"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
