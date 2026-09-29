@@ -101,6 +101,78 @@ class TestSynthesize:
         assert kwargs["speed"] == 0.5
 
 
+class TestSynthesizeStream:
+    def test_yields_one_chunk_per_sentence_in_order(self, fake_kokoro):
+        per_sentence = [
+            (np.full(3, 1.0, dtype=np.float32), 24000),
+            (np.full(3, 2.0, dtype=np.float32), 24000),
+            (np.full(3, 3.0, dtype=np.float32), 24000),
+        ]
+        fake_kokoro.return_value.create.side_effect = per_sentence
+
+        chunks = list(engine.Stackvox().synthesize_stream("One. Two. Three."))
+
+        assert [sample_rate for _, sample_rate in chunks] == [24000, 24000, 24000]
+        assert [samples[0] for samples, _ in chunks] == [1.0, 2.0, 3.0]
+
+    def test_yields_raw_samples_without_playback_smoothing(self, fake_kokoro, fake_audio):
+        # The prime silence and fade-in are for a physical output device; a
+        # caller encoding the audio itself must get the samples untouched.
+        fake_kokoro.return_value.create.return_value = (np.ones(1000, dtype=np.float32), 24000)
+
+        samples, _ = next(engine.Stackvox().synthesize_stream("hello"))
+
+        assert samples[0] == 1.0
+        engine.sd.OutputStream.assert_not_called()
+
+    def test_blank_text_yields_nothing(self, fake_kokoro):
+        assert list(engine.Stackvox().synthesize_stream("   \n  ")) == []
+
+    def test_per_call_overrides_take_priority(self, fake_kokoro):
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        tts = engine.Stackvox(voice="af_sarah", speed=1.0, lang="en-us")
+
+        list(tts.synthesize_stream("hi", voice="bf_emma", speed=1.5, lang="en-gb"))
+
+        fake_kokoro.return_value.create.assert_called_once_with(
+            "hi", voice="bf_emma", speed=1.5, lang="en-gb"
+        )
+
+    def test_surfaces_synthesis_errors_to_the_consumer(self, fake_kokoro):
+        # The producer runs on its own thread, so a failure there has to be
+        # handed back rather than ending the stream as if it were complete.
+        fake_kokoro.return_value.create.side_effect = RuntimeError("boom")
+        tts = engine.Stackvox()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            list(tts.synthesize_stream("hello there"))
+
+    def test_abandoning_the_stream_stops_the_synth_thread(self, fake_kokoro):
+        # More sentences than the queue holds, so the producer is parked on a
+        # full put when the consumer walks away. Closing has to drain it.
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        text = " ".join(f"Sentence {n}." for n in range(40))
+        before = set(threading.enumerate())
+
+        stream = engine.Stackvox().synthesize_stream(text)
+        next(stream)
+        producers = [t for t in threading.enumerate() if t not in before and t.name == "stackvox-synth"]
+        assert len(producers) == 1
+
+        stream.close()
+
+        assert not producers[0].is_alive()
+
+    def test_is_independent_of_playback_cancellation(self, fake_kokoro, fake_audio):
+        # stop() cancels playback on the shared output device; it must not
+        # truncate an unrelated caller's stream.
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        tts = engine.Stackvox()
+        tts.stop()
+
+        assert len(list(tts.synthesize_stream("One. Two. Three."))) == 3
+
+
 class TestSpeak:
     def test_blocking_synthesizes_and_plays_each_sentence(self, fake_kokoro, fake_audio):
         fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
@@ -325,6 +397,12 @@ class TestModuleLevelHelpers:
         fake_kokoro.return_value.create.return_value = (np.zeros(10), 24000)
         engine.synthesize("first")
         engine.synthesize("second")
+        assert fake_kokoro.call_count == 1
+
+    def test_synthesize_stream_reuses_module_singleton(self, fake_kokoro):
+        fake_kokoro.return_value.create.return_value = (np.zeros(10), 24000)
+        list(engine.synthesize_stream("first"))
+        list(engine.synthesize_stream("second"))
         assert fake_kokoro.call_count == 1
 
     def test_get_default_is_thread_safe(self, fake_kokoro):

@@ -127,7 +127,7 @@ Exit codes: `0` ok, `2` daemon unreachable (unless `--fallback-say` was given).
 ## Python library
 
 ```python
-from stackvox import Stackvox, speak, synthesize
+from stackvox import Stackvox, speak, synthesize, synthesize_stream
 
 # One-shot — model loads on first call, reused for subsequent calls.
 speak("Hello world")
@@ -143,6 +143,11 @@ tts.stop()
 
 # Raw samples for custom processing.
 samples, sr = tts.synthesize("give me the array")
+
+# Streaming: one chunk per sentence, yielded as soon as it is synthesized, so
+# a caller encoding audio itself waits one sentence rather than the whole text.
+for chunk, sr in tts.synthesize_stream("First sentence. Second sentence."):
+    encode_and_send(chunk, sr)
 
 # Gapless multi-line playback with concurrent synthesis.
 tts.speak_sequence([
