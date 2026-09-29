@@ -107,7 +107,7 @@ Keeps the model resident so each subsequent call is instant:
 stackvox serve         # foreground; run with `nohup stackvox serve &` to background
 stackvox status        # is the daemon up? also shows version + any pending PyPI update
 stackvox say "Hello"   # send text to the daemon (fails if not running)
-stackvox stop          # graceful shutdown
+stackvox stop          # graceful shutdown, force-killed if it's still up after 5s
 ```
 
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
@@ -226,6 +226,8 @@ The daemon reads mixes when it starts, so restart it (`stackvox stop`, then `sta
 Socket lives at `~/.cache/stackvox/daemon.sock` (override with `STACKVOX_SOCKET` for the client, `STACKVOX_CACHE_DIR` for the daemon). Protocol is one line of JSON per connection: `{"text":"...", "voice":"...", "speed":1.0, "lang":"en-us"}`; reply is `ok` / `busy` / `err: <msg>`. Plain text (no JSON) is accepted as a fallback and treated as `{"text": line}`.
 
 Queue depth is 2 — rapid-fire requests beyond that get `busy` rather than piling up.
+
+If playback hangs the daemon exits rather than answering `busy` forever. Each utterance gets 60s plus half a second per character, slower than any voice reads it even at speed 0.5. Past that the daemon removes its socket and exits with status 70, so `say` reports it isn't running and anything that starts the daemon on demand gets a fresh one. On macOS this has been a deadlock inside PortAudio stopping a stream, which `cancel` can't break.
 
 Before each utterance the daemon resets PortAudio so it picks up the current system default output device. Swap from speakers to Bluetooth headphones mid-session and the next `say` follows you — no daemon restart needed. The refresh costs ~10–50ms per play, which is invisible next to synthesis time.
 

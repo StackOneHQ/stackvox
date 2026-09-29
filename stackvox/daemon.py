@@ -46,10 +46,22 @@ WORKER_POLL_SECONDS = 0.5
 CLIENT_TIMEOUT_SECONDS = 1.0
 PING_TIMEOUT_SECONDS = 0.5
 # How long `stop` waits for the daemon process to actually exit after it has
-# acknowledged the request, and how often it re-checks.
+# acknowledged the request, and how often it re-checks. Past the timeout it
+# sends SIGKILL and waits up to KILL_TIMEOUT_SECONDS for that to take.
 STOP_TIMEOUT_SECONDS = 5.0
 STOP_POLL_SECONDS = 0.05
+KILL_TIMEOUT_SECONDS = 1.0
 RECV_BYTES = 1024
+
+# Watchdog budget for one utterance: a fixed allowance for synthesis and stream
+# setup and teardown, plus the text read slower than any voice actually reads
+# it. Dense text (numbers, acronyms) at kokoro's minimum speed of 0.5 measures
+# about 3.4 chars/s, so 2 chars/s leaves headroom even there. A worker still on
+# one utterance past its budget is treated as wedged. The case seen so far is a
+# deadlock in native audio code, which no Python-level cancel can interrupt.
+WATCHDOG_GRACE_SECONDS = 60.0
+WATCHDOG_MIN_CHARS_PER_SECOND = 2.0
+WATCHDOG_POLL_SECONDS = 5.0
 
 
 # Set when PortAudio's cached default-output device is suspected stale and
@@ -171,6 +183,30 @@ def _start_device_watcher() -> None:
     logger.debug("audio device watcher started")
 
 
+def _utterance_budget(text: str) -> float:
+    """Seconds the worker may spend on one request before it counts as wedged."""
+    return WATCHDOG_GRACE_SECONDS + len(text) / WATCHDOG_MIN_CHARS_PER_SECOND
+
+
+def _remove_runtime_files() -> None:
+    SOCKET_PATH.unlink(missing_ok=True)
+    PID_PATH.unlink(missing_ok=True)
+
+
+def _exit_wedged() -> None:
+    """Exit hard so a fresh daemon can take over from a wedged one.
+
+    On macOS the worker has been seen deadlocked inside PortAudio's stream stop,
+    waiting on a CoreAudio lock held by CoreAudio's own IO thread. A normal
+    shutdown didn't get out either (`stop` timed out with the process still
+    alive), so this uses `os._exit`. The socket goes first: clients that start
+    the daemon on demand do so when the socket is missing, and until it is gone
+    they keep getting `busy`.
+    """
+    _remove_runtime_files()
+    os._exit(os.EX_SOFTWARE)
+
+
 class _DaemonState:
     def __init__(
         self, voice: str, speed: float, lang: str, custom_voices: Mapping[str, VoiceMix] | None = None
@@ -178,8 +214,12 @@ class _DaemonState:
         self.tts = Stackvox(voice=voice, speed=speed, lang=lang, custom_voices=custom_voices)
         self.queue: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUE)
         self.stop_event = threading.Event()
+        # Monotonic time by which the worker must finish its current request;
+        # None while idle.
+        self.deadline: float | None = None
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
+        threading.Thread(target=self._watchdog, daemon=True, name="stackvox-watchdog").start()
         _start_device_watcher()
 
     def _worker(self) -> None:
@@ -188,6 +228,9 @@ class _DaemonState:
                 req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
+            # Armed before the audio refresh as well as playback: both call into
+            # PortAudio, and either can block on a CoreAudio lock for good.
+            self.deadline = time.monotonic() + _utterance_budget(req["text"])
             if _audio_dirty.is_set():
                 _refresh_audio_devices()
                 _audio_dirty.clear()
@@ -203,6 +246,25 @@ class _DaemonState:
                 # Failed playback might be a stale audio context; mark dirty
                 # so the next request refreshes before trying again.
                 _audio_dirty.set()
+            self.deadline = None
+
+    def overrun(self, now: float) -> float | None:
+        """Seconds the current request has run past its deadline, or None if
+        the worker is idle or still within budget."""
+        deadline = self.deadline
+        if deadline is None or now <= deadline:
+            return None
+        return now - deadline
+
+    def _watchdog(self) -> None:
+        while not self.stop_event.wait(WATCHDOG_POLL_SECONDS):
+            overrun = self.overrun(time.monotonic())
+            if overrun is not None:
+                logger.error(
+                    "playback worker is %.1fs past its deadline; exiting so a fresh daemon can start",
+                    overrun,
+                )
+                _exit_wedged()
 
     def submit(self, req: dict) -> bool:
         try:
@@ -344,8 +406,7 @@ def serve(
     try:
         server.serve_forever()
     finally:
-        SOCKET_PATH.unlink(missing_ok=True)
-        PID_PATH.unlink(missing_ok=True)
+        _remove_runtime_files()
 
 
 def send(req: dict, timeout: float = CLIENT_TIMEOUT_SECONDS) -> tuple[bool, str]:
@@ -387,6 +448,10 @@ def stop(timeout: float = STOP_TIMEOUT_SECONDS) -> tuple[bool, str]:
     to start, and the shutdown then completed, leaving nothing running at all.
     Reporting success before the process has exited makes that sequence, the one
     `status` recommends, silently useless.
+
+    A daemon still alive after `timeout` gets SIGKILL. One with its worker
+    deadlocked in PortAudio (see `_exit_wedged`) has been seen to acknowledge
+    and then never exit.
     """
     pid = _read_pid()
     ok, resp = send({"command": "stop"})
@@ -394,12 +459,28 @@ def stop(timeout: float = STOP_TIMEOUT_SECONDS) -> tuple[bool, str]:
         # Nothing acknowledged, or no pid to watch: the caller's own
         # `is_running` check is as good as it gets.
         return ok, resp
+    if _wait_for_exit(pid, timeout):
+        return True, resp
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True, resp  # exited on its own just after the last check
+    if not _wait_for_exit(pid, KILL_TIMEOUT_SECONDS):
+        return False, f"daemon acknowledged stop but pid {pid} is still alive after SIGKILL"
+    # The killed daemon can't remove its own files. Leave them if a new daemon
+    # has started since and rewritten the pid file.
+    if _read_pid() == pid:
+        _remove_runtime_files()
+    return True, f"daemon did not exit within {timeout:g}s of acknowledging stop; killed pid {pid}"
+
+
+def _wait_for_exit(pid: int, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while True:
         if not _pid_alive(pid):
-            return True, resp
+            return True
         if time.monotonic() >= deadline:
-            return False, f"daemon acknowledged stop but pid {pid} is still alive after {timeout:g}s"
+            return False
         time.sleep(STOP_POLL_SECONDS)
 
 
