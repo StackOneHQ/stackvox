@@ -119,7 +119,10 @@ def _load_kokoro(
     if session_options is None:
         return Kokoro(str(model_path), str(voices_path))
     session = ort.InferenceSession(str(model_path), sess_options=session_options, providers=_onnx_providers())
-    return Kokoro.from_session(session, str(voices_path))
+    # from_session carries no return annotation upstream, so bind it through a
+    # typed name rather than returning Any straight out of a typed function.
+    kokoro: Kokoro = Kokoro.from_session(session, str(voices_path))
+    return kokoro
 
 
 # Split after ., !, or ? that is followed by whitespace, and on newlines. The
