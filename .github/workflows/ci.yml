@@ -82,7 +82,7 @@ jobs:
     # the stackone-say-hooks plugin use case all live on macOS — so we
     # validate against at least one Python version on macos-latest.
     name: test macos (py${{ matrix.python }})
-    runs-on: warp-macos-latest-arm64-6x
+    runs-on: warp-macos-26-arm64-6x
     strategy:
       fail-fast: false
       matrix:
