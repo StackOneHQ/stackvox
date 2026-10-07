@@ -326,6 +326,11 @@ class _Handler(socketserver.StreamRequestHandler):
         if not text:
             self.wfile.write(b"err: missing text\n")
             return
+        # The worker sizes its watchdog budget from len(text) before playback's
+        # try, so anything else queued here would kill the worker.
+        if not isinstance(text, str):
+            self.wfile.write(b"err: text must be a string\n")
+            return
 
         if state.submit(req):
             self.wfile.write(b"ok\n")

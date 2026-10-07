@@ -107,7 +107,7 @@ Keeps the model resident so each subsequent call is instant:
 stackvox serve         # foreground; run with `nohup stackvox serve &` to background
 stackvox status        # is the daemon up? also shows version + any pending PyPI update
 stackvox say "Hello"   # send text to the daemon (fails if not running)
-stackvox stop          # graceful shutdown, force-killed if it's still up after 5s
+stackvox stop          # graceful shutdown, force-killed if it acknowledges but is still up after 5s
 ```
 
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
