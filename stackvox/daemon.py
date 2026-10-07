@@ -57,8 +57,8 @@ RECV_BYTES = 1024
 # setup and teardown, plus the text read slower than any voice actually reads
 # it. Dense text (numbers, acronyms) at kokoro's minimum speed of 0.5 measures
 # about 3.4 chars/s, so 2 chars/s leaves headroom even there. A worker still on
-# one utterance past its budget is treated as wedged. The case seen so far is a
-# deadlock in native audio code, which no Python-level cancel can interrupt.
+# one utterance past its budget is treated as wedged. The cases seen so far hang
+# in native audio code, which no Python-level cancel can interrupt.
 WATCHDOG_GRACE_SECONDS = 60.0
 WATCHDOG_MIN_CHARS_PER_SECOND = 2.0
 WATCHDOG_POLL_SECONDS = 5.0
@@ -197,9 +197,11 @@ def _exit_wedged() -> None:
     """Exit hard so a fresh daemon can take over from a wedged one.
 
     On macOS the worker has been seen deadlocked inside PortAudio's stream stop,
-    waiting on a CoreAudio lock held by CoreAudio's own IO thread. A normal
-    shutdown didn't get out either (`stop` timed out with the process still
-    alive), so this uses `os._exit`. The socket goes first: clients that start
+    waiting on a CoreAudio lock held by CoreAudio's own IO thread, and parked
+    for days in a blocking write to an output device that stopped taking audio,
+    which `cancel`'s stream abort didn't release. A normal shutdown didn't get
+    out of the first (`stop` timed out with the process still alive), so this
+    uses `os._exit`. The socket goes first: clients that start
     the daemon on demand do so when the socket is missing, and until it is gone
     they keep getting `busy`.
     """

@@ -227,7 +227,7 @@ Socket lives at `~/.cache/stackvox/daemon.sock` (override with `STACKVOX_SOCKET`
 
 Queue depth is 2 — rapid-fire requests beyond that get `busy` rather than piling up.
 
-If playback hangs the daemon exits rather than answering `busy` forever. Each utterance gets 60s plus half a second per character, slower than any voice reads it even at speed 0.5. Past that the daemon removes its socket and exits with status 70, so `say` reports it isn't running and anything that starts the daemon on demand gets a fresh one. On macOS this has been a deadlock inside PortAudio stopping a stream, which `cancel` can't break.
+If playback hangs the daemon exits rather than answering `busy` forever. Each utterance gets 60s plus half a second per character, slower than any voice reads it even at speed 0.5. Past that the daemon removes its socket and exits with status 70, so `say` reports it isn't running and anything that starts the daemon on demand gets a fresh one. On macOS this has been PortAudio deadlocked stopping a stream, or stuck writing to an output device that stopped taking audio, and `cancel` can't break either.
 
 Before each utterance the daemon resets PortAudio so it picks up the current system default output device. Swap from speakers to Bluetooth headphones mid-session and the next `say` follows you — no daemon restart needed. The refresh costs ~10–50ms per play, which is invisible next to synthesis time.
 
