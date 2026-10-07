@@ -45,7 +45,7 @@ jobs:
     name: open / merge release PR
     # Skip on manual dispatch — that path goes straight to publish.
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     outputs:
       released: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
@@ -70,7 +70,7 @@ jobs:
         needs.release-please.outputs.released == 'true' ||
         (github.event_name == 'workflow_dispatch' && inputs.tag != '')
       )
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     environment:
       name: pypi
       url: https://pypi.org/project/stackvox/

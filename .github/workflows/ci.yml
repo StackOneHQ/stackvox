@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint:
     name: lint & format
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -28,7 +28,7 @@ jobs:
 
   types:
     name: mypy
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -44,7 +44,7 @@ jobs:
 
   test:
     name: test (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +82,7 @@ jobs:
     # the stackone-say-hooks plugin use case all live on macOS — so we
     # validate against at least one Python version on macos-latest.
     name: test macos (py${{ matrix.python }})
-    runs-on: macos-latest
+    runs-on: warp-macos-latest-arm64-6x
     strategy:
       fail-fast: false
       matrix:
@@ -105,7 +105,7 @@ jobs:
     name: commit message lint
     # Only meaningful on PRs (compare base..HEAD). Skip on push-to-main.
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-2x
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
