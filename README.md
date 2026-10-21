@@ -137,6 +137,10 @@ tts = Stackvox(voice="af_bella")
 tts.speak("First line")
 tts.speak("Faster", speed=1.2)
 
+# Cap ONNX Runtime's thread pools — it otherwise sizes them from the host's core
+# count, which oversubscribes inside a container with a smaller CPU quota.
+tts = Stackvox(threads=4)
+
 # Non-blocking playback.
 tts.speak("async", blocking=False)
 tts.stop()
