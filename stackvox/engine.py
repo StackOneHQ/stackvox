@@ -240,7 +240,7 @@ class Stackvox:
                 top_p=top_p,
                 top_k=top_k,
             )
-        assert self._kokoro is not None
+        kokoro = self._require_kokoro()
         mlx_only = {
             "reference_audio": reference_audio,
             "reference_text": reference_text,
@@ -261,7 +261,7 @@ class Stackvox:
             default_lang=self.lang,
             custom=self.custom_voices,
         )
-        samples, sample_rate = self._kokoro.create(
+        samples, sample_rate = kokoro.create(
             text,
             voice=self._style(params.voice),
             speed=params.speed,
@@ -320,14 +320,20 @@ class Stackvox:
             top_k=top_k,
         )
 
+    def _require_kokoro(self) -> Kokoro:
+        # A raise rather than an assert: asserts vanish under `python -O`.
+        if self._kokoro is None:
+            raise RuntimeError(f"the {self.backend} backend has no Kokoro engine")
+        return self._kokoro
+
     def _style(self, name: str) -> str | np.ndarray:
         """A Kokoro voice id passes straight through; a mix becomes its blended style vector."""
-        assert self._kokoro is not None
+        kokoro = self._require_kokoro()
         mix = self.custom_voices.get(name)
         if mix is None:
             return name
         if name not in self._blends:
-            self._blends[name] = blend(name, mix, self._kokoro.get_voice_style, self._kokoro.get_voices())
+            self._blends[name] = blend(name, mix, kokoro.get_voice_style, kokoro.get_voices())
         return self._blends[name]
 
     def _cancel_active(self) -> None:

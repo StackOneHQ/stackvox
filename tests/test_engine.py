@@ -619,6 +619,12 @@ class TestMlxBackend:
 
         assert fake_mlx.return_value.synthesize.call_args.kwargs["instruct"] == "Warmly."
 
+    def test_kokoro_only_path_raises_rather_than_asserting(self, fake_mlx, tmp_path):
+        tts = engine.Stackvox(backend="mlx", model_dir=tmp_path)
+
+        with pytest.raises(RuntimeError, match="mlx backend has no Kokoro engine"):
+            tts._style("af_sarah")
+
     @pytest.mark.parametrize("option", [{"threads": 2}, {"session_options": object()}])
     def test_rejects_kokoro_thread_options(self, fake_mlx, tmp_path, option):
         with pytest.raises(ValueError, match="require the kokoro backend"):
