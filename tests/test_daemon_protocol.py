@@ -110,6 +110,18 @@ def test_missing_text_yields_error(server: ServerHarness):
     assert reply.startswith("err:")
 
 
+def test_non_string_text_is_refused_and_the_worker_keeps_playing(server: ServerHarness):
+    import time
+
+    assert _roundtrip(server.sock, json.dumps({"text": 5}) + "\n") == "err: text must be a string"
+
+    assert _roundtrip(server.sock, "hello\n") == "ok"
+    deadline = time.monotonic() + 1.0
+    while not server.tts.speak.call_args_list and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.tts.speak.call_args.args[0] == "hello"
+
+
 def test_full_queue_returns_busy(server: ServerHarness):
     from stackvox import daemon
 

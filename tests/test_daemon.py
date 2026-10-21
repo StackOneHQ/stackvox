@@ -1,11 +1,12 @@
 """Daemon tests for non-protocol surface — pid/socket helpers, send/say/stop/ping
-client, _refresh_audio_devices, and the cross-platform watcher entry point.
-The protocol/handler tests live in test_daemon_protocol.py.
+client, _refresh_audio_devices, the cross-platform watcher entry point, and the
+wedge watchdog. The protocol/handler tests live in test_daemon_protocol.py.
 """
 
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -179,17 +180,70 @@ class TestStopWaitsForExit:
         assert alive.call_count == 3
         assert sleep.call_count == 2
 
-    def test_fails_when_the_process_outlives_the_timeout(self, mocker):
+
+class TestStopKillsAHungDaemon:
+    """A daemon that acknowledges `stop` but outlives the wait gets SIGKILL.
+
+    A worker deadlocked in PortAudio blocks the normal shutdown path too, so
+    without the kill `stop` reported failure and left the daemon running.
+    """
+
+    def test_kills_the_process_and_removes_its_files(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=4242)
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        mocker.patch.object(daemon, "_pid_alive", side_effect=[True, False])
+        mocker.patch.object(daemon.time, "sleep")
+        kill = mocker.patch.object(daemon.os, "kill")
+        remove = mocker.patch.object(daemon, "_remove_runtime_files")
+
+        ok, resp = daemon.stop(timeout=0.0)
+
+        assert ok is True
+        assert "killed pid 4242" in resp
+        kill.assert_called_once_with(4242, daemon.signal.SIGKILL)
+        remove.assert_called_once()
+
+    def test_keeps_the_files_of_a_daemon_started_since(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", side_effect=[4242, 5151])
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        mocker.patch.object(daemon, "_pid_alive", side_effect=[True, False])
+        mocker.patch.object(daemon.time, "sleep")
+        mocker.patch.object(daemon.os, "kill")
+        remove = mocker.patch.object(daemon, "_remove_runtime_files")
+
+        ok, _resp = daemon.stop(timeout=0.0)
+
+        assert ok is True
+        remove.assert_not_called()
+
+    def test_reports_success_when_the_process_exits_before_the_kill(self, mocker):
         mocker.patch.object(daemon, "_read_pid", return_value=4242)
         mocker.patch.object(daemon, "send", return_value=(True, "ok"))
         mocker.patch.object(daemon, "_pid_alive", return_value=True)
         mocker.patch.object(daemon.time, "sleep")
+        mocker.patch.object(daemon.os, "kill", side_effect=ProcessLookupError)
+        remove = mocker.patch.object(daemon, "_remove_runtime_files")
+
+        actual = daemon.stop(timeout=0.0)
+
+        assert actual == (True, "ok")
+        remove.assert_not_called()
+
+    def test_fails_when_the_process_survives_sigkill(self, mocker):
+        mocker.patch.object(daemon, "_read_pid", return_value=4242)
+        mocker.patch.object(daemon, "send", return_value=(True, "ok"))
+        mocker.patch.object(daemon, "_pid_alive", return_value=True)
+        mocker.patch.object(daemon.time, "sleep")
+        mocker.patch.object(daemon, "KILL_TIMEOUT_SECONDS", 0.0)
+        mocker.patch.object(daemon.os, "kill")
+        remove = mocker.patch.object(daemon, "_remove_runtime_files")
 
         ok, resp = daemon.stop(timeout=0.0)
 
         assert ok is False
-        assert "still alive" in resp
+        assert "still alive after SIGKILL" in resp
         assert "4242" in resp
+        remove.assert_not_called()
 
 
 class TestReadPid:
@@ -208,3 +262,134 @@ class TestReadPid:
         pid.write_text("4242\n")
         mocker.patch.object(daemon, "PID_PATH", pid)
         assert daemon._read_pid() == 4242
+
+
+class TestRemoveRuntimeFiles:
+    def test_removes_the_socket_and_pid_files(self, mocker, tmp_path):
+        sock = tmp_path / "daemon.sock"
+        pid = tmp_path / "daemon.pid"
+        sock.touch()
+        pid.write_text("4242")
+        mocker.patch.object(daemon, "SOCKET_PATH", sock)
+        mocker.patch.object(daemon, "PID_PATH", pid)
+
+        daemon._remove_runtime_files()
+
+        assert not sock.exists()
+        assert not pid.exists()
+
+    def test_tolerates_files_already_gone(self, mocker, tmp_path):
+        mocker.patch.object(daemon, "SOCKET_PATH", tmp_path / "daemon.sock")
+        mocker.patch.object(daemon, "PID_PATH", tmp_path / "daemon.pid")
+
+        daemon._remove_runtime_files()  # must not raise
+
+
+class TestExitWedged:
+    def test_removes_the_socket_before_exiting(self, mocker, tmp_path):
+        """Clients start a fresh daemon when the socket is missing, so it must
+        be gone by the time the process is."""
+        sock = tmp_path / "daemon.sock"
+        sock.touch()
+        mocker.patch.object(daemon, "SOCKET_PATH", sock)
+        mocker.patch.object(daemon, "PID_PATH", tmp_path / "daemon.pid")
+        socket_present_at_exit = []
+        hard_exit = mocker.patch.object(
+            daemon.os, "_exit", side_effect=lambda code: socket_present_at_exit.append(sock.exists())
+        )
+
+        daemon._exit_wedged()
+
+        hard_exit.assert_called_once_with(daemon.os.EX_SOFTWARE)
+        assert socket_present_at_exit == [False]
+
+
+class TestUtteranceBudget:
+    def test_empty_text_gets_the_grace_allowance(self):
+        assert daemon._utterance_budget("") == daemon.WATCHDOG_GRACE_SECONDS
+
+    def test_grows_with_the_length_of_the_text(self):
+        actual = daemon._utterance_budget("x" * 1000)
+
+        assert actual == daemon.WATCHDOG_GRACE_SECONDS + 1000 / daemon.WATCHDOG_MIN_CHARS_PER_SECOND
+
+
+@pytest.fixture
+def exit_wedged(mocker):
+    """The watchdog's hard exit, mocked: the real one would end the test run and
+    delete the live daemon's socket and pid files."""
+    return mocker.patch.object(daemon, "_exit_wedged")
+
+
+@pytest.fixture
+def state(mocker, exit_wedged):
+    """A _DaemonState with the engine and the audio side mocked out, and a
+    watchdog that polls fast enough to test. The poll interval is patched before
+    the watchdog starts, because its first wait reads it once."""
+    mocker.patch.object(daemon, "WATCHDOG_POLL_SECONDS", 0.01)
+    mocker.patch.object(daemon, "Stackvox")
+    mocker.patch.object(daemon, "_refresh_audio_devices")
+    mocker.patch.object(daemon, "_start_device_watcher")
+    daemon_state = daemon._DaemonState(voice="af_sarah", speed=1.0, lang="en-us")
+    try:
+        yield daemon_state
+    finally:
+        daemon_state.shutdown()
+
+
+def _wait_until(condition, timeout: float = 1.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+class TestWorkerDeadline:
+    def test_is_armed_during_playback_and_cleared_after(self, state):
+        deadlines_seen = []
+        state.tts.speak.side_effect = lambda *args, **kwargs: deadlines_seen.append(state.deadline)
+        before = time.monotonic()
+
+        state.submit({"text": "hello"})
+        _wait_until(lambda: deadlines_seen and state.deadline is None)
+
+        assert len(deadlines_seen) == 1
+        assert deadlines_seen[0] >= before + daemon._utterance_budget("hello")
+        assert state.deadline is None
+
+    def test_is_cleared_when_playback_fails(self, state):
+        state.tts.speak.side_effect = RuntimeError("device gone")
+
+        state.submit({"text": "hello"})
+        _wait_until(lambda: state.tts.speak.called and state.deadline is None)
+
+        assert state.tts.speak.called
+        assert state.deadline is None
+
+
+class TestOverrun:
+    def test_is_none_while_idle(self, state):
+        assert state.overrun(time.monotonic()) is None
+
+    def test_is_none_within_the_deadline(self, state):
+        state.deadline = 100.0
+
+        assert state.overrun(99.0) is None
+
+    def test_is_the_time_past_the_deadline(self, state):
+        state.deadline = 100.0
+
+        assert state.overrun(130.0) == 30.0
+
+
+class TestWatchdog:
+    def test_exits_once_the_worker_overruns_its_deadline(self, state, exit_wedged):
+        state.deadline = time.monotonic() - 1.0
+        _wait_until(lambda: exit_wedged.called)
+
+        exit_wedged.assert_called()
+
+    def test_leaves_a_worker_within_its_deadline_alone(self, state, exit_wedged):
+        state.deadline = time.monotonic() + 60.0
+        time.sleep(0.1)
+
+        exit_wedged.assert_not_called()
