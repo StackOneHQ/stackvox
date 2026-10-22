@@ -60,3 +60,28 @@ phonemizer-fork
   runtime. Downstream users who distribute a combined work that includes
   phonemizer-fork should review GPL-3.0 obligations for their own
   distribution.
+
+--------------------------------------------------------------------------------
+Optional MLX backend (`stackvox[mlx]`)
+--------------------------------------------------------------------------------
+
+The components below are used only when the optional MLX backend is installed
+and selected. stackvox does not download, bundle, modify, or redistribute any
+MLX model; the user supplies a local model directory, and that model's own
+license governs its use.
+
+mlx-audio
+  Copyright (c) 2024 Prince Canuma
+  Licensed under the MIT License
+  https://github.com/Blaizzy/mlx-audio
+
+mlx and mlx-lm
+  Copyright © 2023 Apple Inc.
+  Licensed under the MIT License
+  https://github.com/ml-explore/mlx
+  https://github.com/ml-explore/mlx-lm
+
+transformers
+  Copyright 2018- The Hugging Face team. All rights reserved.
+  Licensed under the Apache License, Version 2.0
+  https://github.com/huggingface/transformers
