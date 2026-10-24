@@ -834,3 +834,119 @@ class TestModelAdapterCli:
             cli.main()
         assert exc.value.code == 2
         assert "require --backend mlx" in capsys.readouterr().err
+
+
+class TestServeBackendFromConfig:
+    """``[serve]`` picks serve's backend only when no --backend flag does."""
+
+    MLX_SERVE = '[serve]\nbackend = "mlx"\nmodel_dir = "/models/voice"\nmodel_adapter = "/adapters/voice.py"\ntop_k = 20\n'
+
+    def _config(self, monkeypatch, tmp_path, body):
+        path = tmp_path / "config.toml"
+        path.write_text(body, encoding="utf-8")
+        monkeypatch.setenv("STACKVOX_CONFIG", str(path))
+
+    def _serve_args(self, **overrides):
+        values = {
+            "backend": None,
+            "model_dir": None,
+            "model_adapter": None,
+            **{key: None for key in cli.MLX_OPTIONS},
+        }
+        return _ns(**{**values, **overrides})
+
+    def test_config_supplies_the_backend_when_no_flag_does(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        args = self._serve_args()
+
+        cli._apply_serve_config(args)
+
+        assert args.backend == "mlx"
+        assert args.backend_from_config is True
+        assert args.model_dir == Path("/models/voice")
+        assert args.model_adapter == Path("/adapters/voice.py")
+        assert args.top_k == 20
+
+    def test_explicit_backend_flag_ignores_the_config(self, monkeypatch, tmp_path):
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        args = self._serve_args(backend="kokoro")
+
+        cli._apply_serve_config(args)
+
+        assert args.backend == "kokoro"
+        assert args.backend_from_config is False
+        assert args.model_dir is None
+        assert args.top_k is None
+
+    def test_flags_beat_the_matching_config_keys(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        args = self._serve_args(model_adapter=Path("/elsewhere.py"), top_k=5)
+
+        cli._apply_serve_config(args)
+
+        assert args.model_adapter == Path("/elsewhere.py")
+        assert args.top_k == 5
+
+    def test_no_serve_table_means_kokoro(self):
+        args = self._serve_args()
+
+        cli._apply_serve_config(args)
+
+        assert args.backend == "kokoro"
+        assert args.backend_from_config is False
+
+    def test_config_backend_admits_generation_flags_through_main(self, mocker, monkeypatch, tmp_path):
+        """[serve] is applied before validation, so --instruct isn't refused as Kokoro-only."""
+        from pathlib import Path
+
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        serve = mocker.patch.object(cli.daemon, "serve")
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "serve", "--instruct", "Warmly."])
+
+        assert cli.main() == 0
+        kwargs = serve.call_args.kwargs
+        assert kwargs["backend"] == "mlx"
+        assert kwargs["model_dir"] == Path("/models/voice")
+        assert kwargs["instruct"] == "Warmly."
+        assert kwargs["top_k"] == 20
+
+    def test_falls_back_to_kokoro_when_the_configured_model_fails_to_load(self, mocker, capsys):
+        serve = mocker.patch.object(cli.daemon, "serve", side_effect=[cli.ModelLoadError("no model"), None])
+        args = self._serve_args(
+            voice="af_sarah", speed=1.0, lang="en-us", backend="mlx", backend_from_config=True
+        )
+
+        assert cli._cmd_serve(args) == 0
+        assert serve.call_count == 2
+        assert serve.call_args.kwargs == {
+            "voice": "af_sarah",
+            "speed": 1.0,
+            "lang": "en-us",
+            "custom_voices": BUILTIN_VOICES,
+        }
+        err = capsys.readouterr().err
+        assert "no model" in err
+        assert "serving kokoro instead" in err
+
+    def test_a_flagged_model_that_fails_to_load_still_fails(self, mocker, capsys):
+        serve = mocker.patch.object(cli.daemon, "serve", side_effect=cli.ModelLoadError("no model"))
+        args = self._serve_args(
+            voice="af_sarah", speed=1.0, lang="en-us", backend="mlx", backend_from_config=False
+        )
+
+        assert cli._cmd_serve(args) == 1
+        assert serve.call_count == 1
+        assert "no model" in capsys.readouterr().err
+
+    def test_config_command_shows_the_serve_backend(self, monkeypatch, tmp_path, capsys):
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+
+        assert cli._cmd_config(_ns()) == 0
+        out = capsys.readouterr().out
+        assert "serve backend: mlx" in out
+        assert "serve model_dir: /models/voice" in out
+        assert "serve top_k: 20" in out

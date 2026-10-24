@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from stackvox import config
-from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE
+from stackvox.engine import DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, MLX_OPTIONS
 from stackvox.voices import BUILTIN_VOICES, VoiceMix
 
 
@@ -154,3 +155,92 @@ class TestLoadVoices:
         with caplog.at_level(logging.WARNING, logger="stackvox.config"):
             assert config.load_voices(path) == BUILTIN_VOICES
         assert "[voices] must be a table" in caplog.text
+
+
+class TestLoadServe:
+    def _write(self, tmp_path, body):
+        path = tmp_path / "config.toml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_missing_file_leaves_the_backend_to_the_flags(self, tmp_path):
+        assert config.load_serve(tmp_path / "absent.toml") == config.ServeConfig()
+
+    def test_file_without_a_serve_table_leaves_the_backend_to_the_flags(self, tmp_path):
+        path = self._write(tmp_path, '[defaults]\nvoice = "bf_emma"\n')
+        assert config.load_serve(path) == config.ServeConfig()
+
+    def test_mlx_backend_with_model_and_generation_defaults(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "[serve]\n"
+            'backend = "mlx"\n'
+            'model_dir = "~/models/voice"\n'
+            'model_adapter = "~/adapters/voice.py"\n'
+            'reference_audio = "~/ref.wav"\n'
+            'reference_text = "Ref."\n'
+            "temperature = 1\n"
+            "top_k = 20\n",
+        )
+
+        actual = config.load_serve(path)
+
+        assert actual.backend == "mlx"
+        assert actual.model_dir == Path("~/models/voice").expanduser()
+        assert actual.model_adapter == Path("~/adapters/voice.py").expanduser()
+        assert actual.generation == {
+            "reference_audio": Path("~/ref.wav").expanduser(),
+            "reference_text": "Ref.",
+            "temperature": 1.0,
+            "top_k": 20,
+        }
+
+    def test_mlx_backend_without_model_dir_is_dropped(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nbackend = "mlx"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "needs model_dir" in caplog.text
+
+    def test_unknown_backend_is_dropped(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nbackend = "espeak"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "backend must be one of" in caplog.text
+
+    def test_settings_without_a_backend_are_dropped(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nmodel_dir = "/models/voice"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "need a backend" in caplog.text
+
+    def test_kokoro_backend_ignores_mlx_only_settings(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nbackend = "kokoro"\nmodel_dir = "/models/voice"\ntop_k = 5\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig(backend="kokoro")
+        assert "model_dir, top_k apply to the mlx backend only" in caplog.text
+
+    def test_a_badly_typed_value_drops_only_that_key(self, tmp_path, caplog):
+        path = self._write(
+            tmp_path,
+            '[serve]\nbackend = "mlx"\nmodel_dir = "/models/voice"\nmodel_adapter = 3\ntop_k = 1.5\ntop_p = 0.9\n',
+        )
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            actual = config.load_serve(path)
+        assert actual == config.ServeConfig(
+            backend="mlx", model_dir=Path("/models/voice"), generation={"top_p": 0.9}
+        )
+        assert "model_adapter must be a path" in caplog.text
+        assert "top_k has the wrong type" in caplog.text
+
+    def test_boolean_is_not_a_number(self, tmp_path):
+        path = self._write(tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\ntemperature = true\n')
+        assert config.load_serve(path).generation == {}
+
+    def test_serve_section_must_be_a_table(self, tmp_path, caplog):
+        path = self._write(tmp_path, 'serve = "mlx"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "[serve] must be a table" in caplog.text
+
+    def test_parses_every_generation_option_the_engine_takes(self):
+        assert set(config._GENERATION_PARSERS) == set(MLX_OPTIONS)

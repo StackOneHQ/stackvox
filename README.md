@@ -99,6 +99,8 @@ lang = "en-gb"
 
 CLI flags always win over config values, and config values always win over the built-in defaults. The one thing between a flag and the config is a [voice mix](#voice-mixes)'s own `lang` and `speed`, so `--voice chip` stays transatlantic even when `[defaults]` sets `lang = "en-us"`. A missing file is fine — built-ins apply. A malformed file logs a warning and is ignored.
 
+A `[serve]` table picks the backend the daemon starts with, for when something else starts it and you can't add flags. See [Local MLX models](#local-mlx-models-apple-silicon).
+
 ## Daemon mode
 
 Keeps the model resident so each subsequent call is instant:
@@ -207,6 +209,20 @@ stackvox say \
   --reference-text "The exact transcript of the reference audio." \
   "This request uses the resident model."
 ```
+
+To make a model the daemon's default, put it in the [config file](#configuration) instead. A plain `stackvox serve` then loads it, whatever starts the daemon (a login item, an app):
+
+```toml
+[serve]
+backend = "mlx"
+model_dir = "~/models/my-model"
+model_adapter = "~/.config/stackvox/adapters/my_model.py"  # optional
+# Optional generation defaults, the same names as the flags:
+reference_audio = "~/voices/reference.wav"
+reference_text = "The exact transcript of the reference audio."
+```
+
+Passing `--backend` ignores the table altogether. Any other flag beats its matching key. Only `serve` acts on `[serve]`, so `speak` from an install without the mlx extra isn't affected. If the configured model fails to load, `serve` logs why and starts Kokoro instead, so a daemon that gets restarted automatically doesn't crash loop into silence. `--backend mlx` on the command line still fails outright.
 
 Generation options (`--reference-audio`, `--reference-text`, `--instruct`,
 `--temperature`, `--top-p`, `--top-k`) are forwarded only when set, so each
