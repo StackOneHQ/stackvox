@@ -199,7 +199,7 @@ class TestLoadServe:
         path = self._write(tmp_path, '[serve]\nbackend = "mlx"\n')
         with caplog.at_level(logging.WARNING, logger="stackvox.config"):
             assert config.load_serve(path) == config.ServeConfig()
-        assert "needs model_dir" in caplog.text
+        assert "needs a usable model_dir" in caplog.text
 
     def test_unknown_backend_is_dropped(self, tmp_path, caplog):
         path = self._write(tmp_path, '[serve]\nbackend = "espeak"\n')
@@ -229,8 +229,8 @@ class TestLoadServe:
         assert actual == config.ServeConfig(
             backend="mlx", model_dir=Path("/models/voice"), generation={"top_p": 0.9}
         )
-        assert "model_adapter must be a path" in caplog.text
-        assert "top_k has the wrong type" in caplog.text
+        assert "model_adapter is not a usable path" in caplog.text
+        assert "top_k is invalid" in caplog.text
 
     def test_boolean_is_not_a_number(self, tmp_path):
         path = self._write(tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\ntemperature = true\n')
@@ -244,3 +244,28 @@ class TestLoadServe:
 
     def test_parses_every_generation_option_the_engine_takes(self):
         assert set(config._GENERATION_PARSERS) == set(MLX_OPTIONS)
+
+    def test_half_a_reference_pair_is_dropped(self, tmp_path, caplog):
+        path = self._write(
+            tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\nreference_audio = "/ref.wav"\ntop_k = 5\n'
+        )
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            actual = config.load_serve(path)
+        assert actual.generation == {"top_k": 5}
+        assert "only work together" in caplog.text
+
+    def test_unexpandable_model_dir_is_dropped_rather_than_raising(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "~no-such-user-xyz/model"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "needs a usable model_dir" in caplog.text
+
+    def test_unexpandable_adapter_is_dropped_rather_than_raising(self, tmp_path, caplog):
+        path = self._write(
+            tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\nmodel_adapter = "~no-such-user-xyz/a.py"\n'
+        )
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            actual = config.load_serve(path)
+        assert actual.model_adapter is None
+        assert actual.model_dir == Path("/m")
+        assert "model_adapter is not a usable path" in caplog.text

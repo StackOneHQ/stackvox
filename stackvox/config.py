@@ -210,25 +210,39 @@ def load_serve(path: Path | None = None) -> ServeConfig:
         return ServeConfig(backend=backend)
     model_dir = _path(section.get("model_dir"))
     if model_dir is None:
-        logger.warning('config %s: [serve] backend = "mlx" needs model_dir; ignoring [serve]', p)
+        logger.warning('config %s: [serve] backend = "mlx" needs a usable model_dir; ignoring [serve]', p)
         return ServeConfig()
     model_adapter = _path(section.get("model_adapter"))
     if model_adapter is None and "model_adapter" in section:
-        logger.warning("config %s: [serve] model_adapter must be a path; ignoring it", p)
+        logger.warning("config %s: [serve] model_adapter is not a usable path; ignoring it", p)
     generation: dict[str, Any] = {}
     for key, parse in _GENERATION_PARSERS.items():
         if key not in section:
             continue
         value = parse(section[key])
         if value is None:
-            logger.warning("config %s: [serve] %s has the wrong type; ignoring it", p, key)
+            logger.warning("config %s: [serve] %s is invalid; ignoring it", p, key)
             continue
         generation[key] = value
+    # The engine refuses one without the other on every request, so a daemon
+    # started with half a pair would come up and then fail everything it's asked.
+    if ("reference_audio" in generation) != ("reference_text" in generation):
+        logger.warning(
+            "config %s: [serve] reference_audio and reference_text only work together; ignoring the one given",
+            p,
+        )
+        generation.pop("reference_audio", None)
+        generation.pop("reference_text", None)
     return ServeConfig(backend="mlx", model_dir=model_dir, model_adapter=model_adapter, generation=generation)
 
 
 def _path(value: object) -> Path | None:
-    return Path(value).expanduser() if isinstance(value, str) and value else None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return Path(value).expanduser()
+    except RuntimeError:  # "~name/..." for a user this machine doesn't have
+        return None
 
 
 def _text(value: object) -> str | None:
