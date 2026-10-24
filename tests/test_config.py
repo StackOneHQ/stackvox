@@ -269,3 +269,43 @@ class TestLoadServe:
         assert actual.model_adapter is None
         assert actual.model_dir == Path("/m")
         assert "model_adapter is not a usable path" in caplog.text
+
+    def test_text_without_audio_is_dropped_too(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\nreference_text = "Ref."\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            actual = config.load_serve(path)
+        assert actual.generation == {}
+        assert "only work together" in caplog.text
+
+    def test_relative_paths_resolve_against_the_config_folder(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "[serve]\n"
+            'backend = "mlx"\n'
+            'model_dir = "models/voice"\n'
+            'model_adapter = "adapters/voice.py"\n'
+            'reference_audio = "voices/ref.wav"\n'
+            'reference_text = "Ref."\n',
+        )
+
+        actual = config.load_serve(path)
+
+        assert actual.model_dir == tmp_path / "models/voice"
+        assert actual.model_adapter == tmp_path / "adapters/voice.py"
+        assert actual.generation["reference_audio"] == tmp_path / "voices/ref.wav"
+
+    def test_unknown_keys_are_warned_about_and_ignored(self, tmp_path, caplog):
+        path = self._write(
+            tmp_path, '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\ntop-p = 0.9\ntemprature = 1.0\ntop_k = 5\n'
+        )
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            actual = config.load_serve(path)
+        assert actual == config.ServeConfig(backend="mlx", model_dir=Path("/m"), generation={"top_k": 5})
+        assert "unknown keys temprature, top-p" in caplog.text
+
+    def test_only_unknown_keys_warns_once(self, tmp_path, caplog):
+        path = self._write(tmp_path, '[serve]\nmodel-dir = "/m"\n')
+        with caplog.at_level(logging.WARNING, logger="stackvox.config"):
+            assert config.load_serve(path) == config.ServeConfig()
+        assert "unknown keys model-dir" in caplog.text
+        assert "need a backend" not in caplog.text

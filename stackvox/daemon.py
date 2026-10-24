@@ -1,6 +1,7 @@
-"""Long-running daemon that preloads Kokoro and plays speech on request.
+"""Long-running daemon that preloads a TTS model and plays speech on request.
 
-Avoids the ~1-2s model load on every invocation. Listens on a unix socket.
+Avoids the model load on every invocation (~1-2s for Kokoro, far longer for a
+large MLX model). Listens on a unix socket.
 Protocol: one JSON object per connection (line-terminated), reply is a status line.
 
 Request shapes:
@@ -9,6 +10,7 @@ Request shapes:
     {"command": "cancel"}   # stop the current utterance, keep the daemon up
     {"command": "ping"}
     {"command": "version"}
+    {"command": "backend"}  # the backend this daemon is running
 
 Replies: "ok", "busy", "err: <msg>".
 """
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fcntl
 import json
 import logging
 import os
@@ -27,14 +30,16 @@ import socketserver
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import sounddevice as sd
 
 from stackvox import updates
 from stackvox.engine import (
+    BACKENDS,
     DEFAULT_BACKEND,
     DEFAULT_LANG,
     DEFAULT_SPEED,
@@ -42,13 +47,14 @@ from stackvox.engine import (
     MLX_OPTIONS,
     Stackvox,
 )
-from stackvox.paths import pid_path, socket_path
+from stackvox.paths import lock_path, pid_path, socket_path
 from stackvox.voices import VoiceMix
 
 logger = logging.getLogger(__name__)
 
 SOCKET_PATH = socket_path()
 PID_PATH = pid_path()
+LOCK_PATH = lock_path()
 MAX_QUEUE = 2
 WORKER_POLL_SECONDS = 0.5
 CLIENT_TIMEOUT_SECONDS = 1.0
@@ -341,6 +347,10 @@ class _Handler(socketserver.StreamRequestHandler):
             self.wfile.write(f"{updates._current_version()}\n".encode())
             return
 
+        if command == "backend":
+            self.wfile.write(f"{state.tts.backend}\n".encode())
+            return
+
         if command == "stop":
             self.wfile.write(b"ok\n")
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -417,6 +427,46 @@ def _check_for_update_async() -> None:
     threading.Thread(target=_worker, daemon=True, name="update-check").start()
 
 
+# This process's hold on the startup lock, so a nested startup_lock() is a no-op.
+_startup_lock: IO[str] | None = None
+
+
+@contextmanager
+def startup_lock() -> Iterator[None]:
+    """Hold the daemon's exclusive startup lock, or raise RuntimeError if another process has it.
+
+    Taken before the model loads and held until the daemon exits. Without it,
+    everything that starts ``serve`` while the socket is missing (a supervisor
+    restarting it, clients that spawn it on demand) loads its own copy of the
+    model, and all but one then die failing to bind. With a large model that
+    is gigabytes each. The kernel drops a flock when its process dies, so a
+    killed daemon never leaves it stale, and the file itself is left in place:
+    deleting a lock file someone may hold reopens the race.
+
+    Reentrant within a process, so the CLI can hold it across a failed backend
+    and its fallback without another daemon slipping in between.
+    """
+    global _startup_lock
+    if _startup_lock is not None:
+        yield
+        return
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(LOCK_PATH, "a")  # noqa: SIM115 - held for the daemon's lifetime, closed below
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise RuntimeError(
+            f"another daemon is already starting or running (lock held on {LOCK_PATH})"
+        ) from None
+    _startup_lock = handle
+    try:
+        yield
+    finally:
+        _startup_lock = None
+        handle.close()
+
+
 def serve(
     voice: str = DEFAULT_VOICE,
     speed: float = DEFAULT_SPEED,
@@ -432,48 +482,52 @@ def serve(
     top_p: float | None = None,
     top_k: int | None = None,
 ) -> None:
-    if is_running():
-        raise RuntimeError(f"daemon already running (pid {PID_PATH.read_text().strip()})")
+    with startup_lock():
+        if is_running():
+            raise RuntimeError(f"daemon already running (pid {PID_PATH.read_text().strip()})")
 
-    SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if SOCKET_PATH.exists():
-        SOCKET_PATH.unlink()
+        SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink()
 
-    state = _DaemonState(
-        voice=voice,
-        speed=speed,
-        lang=lang,
-        custom_voices=custom_voices,
-        backend=backend,
-        model_dir=model_dir,
-        model_adapter=model_adapter,
-        generation_defaults={
-            "reference_audio": reference_audio,
-            "reference_text": reference_text,
-            "instruct": instruct,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-        },
-    )
-    server = _UnixServer(str(SOCKET_PATH), _Handler)
-    server.state = state  # type: ignore[attr-defined]
+        state = _DaemonState(
+            voice=voice,
+            speed=speed,
+            lang=lang,
+            custom_voices=custom_voices,
+            backend=backend,
+            model_dir=model_dir,
+            model_adapter=model_adapter,
+            generation_defaults={
+                "reference_audio": reference_audio,
+                "reference_text": reference_text,
+                "instruct": instruct,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+            },
+        )
+        try:
+            server = _UnixServer(str(SOCKET_PATH), _Handler)
+        except OSError as exc:
+            raise RuntimeError(f"could not listen on {SOCKET_PATH}: {exc}") from exc
+        server.state = state  # type: ignore[attr-defined]
 
-    PID_PATH.write_text(str(os.getpid()))
-    _check_for_update_async()
+        PID_PATH.write_text(str(os.getpid()))
+        _check_for_update_async()
 
-    def handle_signal(signum: int, frame: object) -> None:
-        state.shutdown()
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        def handle_signal(signum: int, frame: object) -> None:
+            state.shutdown()
+            threading.Thread(target=server.shutdown, daemon=True).start()
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
 
-    logger.info("daemon listening on %s (pid %d)", SOCKET_PATH, os.getpid())
-    try:
-        server.serve_forever()
-    finally:
-        _remove_runtime_files()
+        logger.info("daemon listening on %s (pid %d)", SOCKET_PATH, os.getpid())
+        try:
+            server.serve_forever()
+        finally:
+            _remove_runtime_files()
 
 
 def send(req: dict, timeout: float = CLIENT_TIMEOUT_SECONDS) -> tuple[bool, str]:
@@ -588,3 +642,14 @@ def version(timeout: float = PING_TIMEOUT_SECONDS) -> tuple[bool, str]:
     """
     _, resp = send({"command": "version"}, timeout=timeout)
     return resp[:1].isdigit(), resp
+
+
+def backend(timeout: float = PING_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """(got_backend, backend_or_error) the running daemon is serving.
+
+    It can differ from ``[serve]`` in the config: a --backend flag wins, and a
+    configured model that fails to load falls back to Kokoro. A daemon from
+    before this command replies with an error, which comes back as not got.
+    """
+    _, resp = send({"command": "backend"}, timeout=timeout)
+    return resp in BACKENDS, resp

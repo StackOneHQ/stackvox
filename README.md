@@ -107,10 +107,12 @@ Keeps the model resident so each subsequent call is instant:
 
 ```bash
 stackvox serve         # foreground; run with `nohup stackvox serve &` to background
-stackvox status        # is the daemon up? also shows version + any pending PyPI update
+stackvox status        # is the daemon up? also shows version, backend + any pending PyPI update
 stackvox say "Hello"   # send text to the daemon (fails if not running)
 stackvox stop          # graceful shutdown, force-killed if it acknowledges but is still up after 5s
 ```
+
+Only one daemon starts at a time. A `serve` started while another is running, or still loading its model, exits straight away rather than loading a second copy.
 
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
 
@@ -222,7 +224,7 @@ reference_audio = "~/voices/reference.wav"
 reference_text = "The exact transcript of the reference audio."
 ```
 
-Passing `--backend` ignores the table altogether. Any other flag beats its matching key. Only `serve` acts on `[serve]`, so `speak` from an install without the mlx extra isn't affected. If the configured model fails to load, `serve` logs why and starts Kokoro instead, so a daemon that gets restarted automatically doesn't crash loop into silence. `--backend mlx` on the command line still fails outright.
+Passing `--backend` or `--model-dir` ignores the table altogether, since the flags then describe the model. Any other flag beats its matching key, and the reference clip and its transcript count as one setting, so give both flags or neither. Relative paths are relative to the config file's folder, and an unknown key (`top-p` for `top_p`, say) gets a warning. Only `serve` acts on `[serve]`, so `speak` from an install without the mlx extra isn't affected. If the configured model fails to load, `serve` logs why and starts Kokoro instead, so a daemon that gets restarted automatically doesn't crash loop into silence, and `stackvox status` shows which backend is actually running. A model named on the command line still fails outright.
 
 Generation options (`--reference-audio`, `--reference-text`, `--instruct`,
 `--temperature`, `--top-p`, `--top-k`) are forwarded only when set, so each

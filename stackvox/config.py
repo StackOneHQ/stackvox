@@ -27,9 +27,10 @@ Each ``[voices.<name>]`` table defines a Kokoro voice mix addressable by that
 name, alongside the built-in ones in ``stackvox.voices``. A table with a
 built-in's name replaces it.
 
-``[serve]`` picks the backend ``stackvox serve`` starts when no ``--backend``
-flag is given, plus that backend's model and generation defaults (the
-``stackvox.engine.MLX_OPTIONS`` names). No other command acts on it.
+``[serve]`` picks the backend ``stackvox serve`` starts when no ``--backend`` or
+``--model-dir`` flag is given, plus that backend's model and generation defaults (the
+``stackvox.engine.MLX_OPTIONS`` names). No other command acts on it. Relative
+paths in it are relative to the config file's folder.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - covered by 3.10 CI
     import tomli as tomllib
 
-from stackvox.engine import BACKENDS, DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE
+from stackvox.engine import BACKENDS, DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, REFERENCE_PAIR
 from stackvox.voices import BUILTIN_VOICES, VoiceMix
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,11 @@ def load_serve(path: Path | None = None) -> ServeConfig:
     Lenient like ``[defaults]``: a missing table gives an empty ServeConfig and a
     bad value is logged and dropped. An mlx backend without a usable
     ``model_dir`` is dropped whole, since the daemon could not start with it.
+    Unknown keys are warned about too, because a misspelt one (``top-p``)
+    otherwise vanishes silently.
+
+    Relative paths resolve against the config file's folder, not the working
+    directory, which for a daemon started by a supervisor is often ``/``.
     """
     p = path or config_path()
     data = _read(p)
@@ -191,6 +197,15 @@ def load_serve(path: Path | None = None) -> ServeConfig:
     if not isinstance(section, dict):
         logger.warning("config %s: [serve] must be a table; ignoring", p)
         return ServeConfig()
+    unknown = sorted(set(section) - _SERVE_KEYS)
+    if unknown:
+        logger.warning(
+            "config %s: [serve] has unknown keys %s (names use underscores, like top_p); ignoring them",
+            p,
+            ", ".join(unknown),
+        )
+        section = {key: value for key, value in section.items() if key in _SERVE_KEYS}
+    base = p.parent
     backend = section.get("backend")
     if backend is None:
         if section:
@@ -208,11 +223,11 @@ def load_serve(path: Path | None = None) -> ServeConfig:
                 "config %s: [serve] %s apply to the mlx backend only; ignoring", p, ", ".join(ignored)
             )
         return ServeConfig(backend=backend)
-    model_dir = _path(section.get("model_dir"))
+    model_dir = _anchored(_path(section.get("model_dir")), base)
     if model_dir is None:
         logger.warning('config %s: [serve] backend = "mlx" needs a usable model_dir; ignoring [serve]', p)
         return ServeConfig()
-    model_adapter = _path(section.get("model_adapter"))
+    model_adapter = _anchored(_path(section.get("model_adapter")), base)
     if model_adapter is None and "model_adapter" in section:
         logger.warning("config %s: [serve] model_adapter is not a usable path; ignoring it", p)
     generation: dict[str, Any] = {}
@@ -223,16 +238,16 @@ def load_serve(path: Path | None = None) -> ServeConfig:
         if value is None:
             logger.warning("config %s: [serve] %s is invalid; ignoring it", p, key)
             continue
-        generation[key] = value
+        generation[key] = _anchored(value, base) if isinstance(value, Path) else value
     # The engine refuses one without the other on every request, so a daemon
     # started with half a pair would come up and then fail everything it's asked.
-    if ("reference_audio" in generation) != ("reference_text" in generation):
+    if sum(key in generation for key in REFERENCE_PAIR) == 1:
         logger.warning(
             "config %s: [serve] reference_audio and reference_text only work together; ignoring the one given",
             p,
         )
-        generation.pop("reference_audio", None)
-        generation.pop("reference_text", None)
+        for key in REFERENCE_PAIR:
+            generation.pop(key, None)
     return ServeConfig(backend="mlx", model_dir=model_dir, model_adapter=model_adapter, generation=generation)
 
 
@@ -243,6 +258,12 @@ def _path(value: object) -> Path | None:
         return Path(value).expanduser()
     except RuntimeError:  # "~name/..." for a user this machine doesn't have
         return None
+
+
+def _anchored(path: Path | None, base: Path) -> Path | None:
+    if path is None or path.is_absolute():
+        return path
+    return base / path
 
 
 def _text(value: object) -> str | None:
@@ -270,3 +291,4 @@ _GENERATION_PARSERS: dict[str, Callable[[object], Any]] = {
     "top_p": _number,
     "top_k": _integer,
 }
+_SERVE_KEYS = {"backend", "model_dir", "model_adapter", *_GENERATION_PARSERS}

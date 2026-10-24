@@ -27,6 +27,12 @@ def _no_user_config(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _private_startup_lock(monkeypatch, tmp_path):
+    """serve takes the daemon's startup lock; keep it off the developer's real cache dir."""
+    monkeypatch.setattr(cli.daemon, "LOCK_PATH", tmp_path / "daemon.lock")
+
+
+@pytest.fixture(autouse=True)
 def _no_network_update_check(mocker):
     """Block the PyPI update check from making real HTTP requests in tests.
 
@@ -448,6 +454,7 @@ class TestCmdStatus:
         # status now queries the running daemon's version; stub it so the test
         # doesn't reach a real socket.
         mocker.patch.object(cli.daemon, "version", return_value=(False, "n/a"))
+        mocker.patch.object(cli.daemon, "backend", return_value=(False, "n/a"))
 
         rc = cli._cmd_status(_ns())
 
@@ -463,6 +470,7 @@ class TestCmdStatus:
         mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
         mocker.patch.object(cli.daemon, "SOCKET_PATH", "/tmp/x.sock")
         mocker.patch.object(cli.daemon, "version", return_value=(True, "0.5.0"))
+        mocker.patch.object(cli.daemon, "backend", return_value=(False, "n/a"))
         mocker.patch.object(cli.updates, "_current_version", return_value="0.8.0")
         mocker.patch.object(cli.updates, "check_for_update", return_value=None)
 
@@ -482,6 +490,7 @@ class TestCmdStatus:
         mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
         mocker.patch.object(cli.daemon, "SOCKET_PATH", "/tmp/x.sock")
         mocker.patch.object(cli.daemon, "version", return_value=(True, "0.11.0"))
+        mocker.patch.object(cli.daemon, "backend", return_value=(False, "n/a"))
         mocker.patch.object(cli.updates, "_current_version", return_value="0.9.0")
         mocker.patch.object(cli.updates, "check_for_update", return_value=None)
 
@@ -950,3 +959,146 @@ class TestServeBackendFromConfig:
         assert "serve backend: mlx" in out
         assert "serve model_dir: /models/voice" in out
         assert "serve top_k: 20" in out
+
+    def test_model_dir_flag_leaves_the_table_out(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        args = self._serve_args(backend="mlx", model_dir=Path("/other/model"))
+
+        cli._apply_serve_config(args)
+
+        assert args.model_dir == Path("/other/model")
+        assert args.model_adapter is None
+        assert args.top_k is None
+        assert args.backend_from_config is False
+
+    def test_model_dir_flag_without_backend_is_a_usage_error(self, mocker, monkeypatch, tmp_path, capsys):
+        self._config(monkeypatch, tmp_path, self.MLX_SERVE)
+        serve = mocker.patch.object(cli.daemon, "serve")
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "serve", "--model-dir", "/other/model"])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 2
+        assert "require --backend mlx" in capsys.readouterr().err
+        serve.assert_not_called()
+
+    def test_one_reference_flag_does_not_borrow_the_tables_other_half(
+        self, mocker, monkeypatch, tmp_path, capsys
+    ):
+        self._config(
+            monkeypatch,
+            tmp_path,
+            '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\nreference_audio = "/ref.wav"\nreference_text = "Ref."\n',
+        )
+        serve = mocker.patch.object(cli.daemon, "serve")
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "serve", "--reference-audio", "/mine.wav"])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 2
+        assert "must be given together" in capsys.readouterr().err
+        serve.assert_not_called()
+
+    def test_both_reference_flags_replace_the_tables_pair(self, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        self._config(
+            monkeypatch,
+            tmp_path,
+            '[serve]\nbackend = "mlx"\nmodel_dir = "/m"\nreference_audio = "/ref.wav"\nreference_text = "Ref."\n',
+        )
+        args = self._serve_args(reference_audio=Path("/mine.wav"), reference_text="Mine.")
+
+        cli._apply_serve_config(args)
+
+        assert (args.reference_audio, args.reference_text) == (Path("/mine.wav"), "Mine.")
+
+    def test_say_with_half_a_reference_pair_is_a_usage_error(self, mocker, capsys):
+        say = mocker.patch.object(cli.daemon, "say")
+        mocker.patch.object(cli.sys, "argv", ["stackvox", "say", "--reference-text", "Ref.", "hi"])
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 2
+        assert "must be given together" in capsys.readouterr().err
+        say.assert_not_called()
+
+    def test_other_errors_do_not_trigger_the_fallback(self, mocker, capsys):
+        serve = mocker.patch.object(cli.daemon, "serve", side_effect=RuntimeError("daemon already running"))
+        args = self._serve_args(
+            voice="af_sarah", speed=1.0, lang="en-us", backend="mlx", backend_from_config=True
+        )
+
+        assert cli._cmd_serve(args) == 1
+        assert serve.call_count == 1
+        assert "already running" in capsys.readouterr().err
+
+    def test_fallback_holds_one_startup_lock_across_both_attempts(self, mocker):
+        lock = mocker.patch.object(cli.daemon, "startup_lock")
+        serve = mocker.patch.object(cli.daemon, "serve", side_effect=[cli.ModelLoadError("no model"), None])
+        args = self._serve_args(
+            voice="af_sarah", speed=1.0, lang="en-us", backend="mlx", backend_from_config=True
+        )
+
+        assert cli._cmd_serve(args) == 0
+        assert serve.call_count == 2
+        lock.assert_called_once_with()
+        assert lock.return_value.__enter__.call_count == 1
+
+    def test_lock_held_by_another_daemon_starts_nothing(self, mocker, capsys):
+        mocker.patch.object(
+            cli.daemon,
+            "startup_lock",
+            side_effect=RuntimeError("another daemon is already starting or running"),
+        )
+        serve = mocker.patch.object(cli.daemon, "serve")
+        args = self._serve_args(voice="af_sarah", speed=1.0, lang="en-us", backend="kokoro")
+
+        assert cli._cmd_serve(args) == 1
+        serve.assert_not_called()
+        assert "already starting or running" in capsys.readouterr().err
+
+
+class TestStatusShowsRunningBackend:
+    def _running(self, mocker, tmp_path, backend_reply):
+        pid_path = tmp_path / "daemon.pid"
+        pid_path.write_text("4242")
+        mocker.patch.object(cli.daemon, "is_running", return_value=True)
+        mocker.patch.object(cli.daemon, "PID_PATH", pid_path)
+        mocker.patch.object(cli.daemon, "version", return_value=(False, "n/a"))
+        mocker.patch.object(cli.daemon, "backend", return_value=backend_reply)
+
+    def test_prints_the_running_backend(self, mocker, tmp_path, capsys):
+        self._running(mocker, tmp_path, (True, "kokoro"))
+
+        cli._cmd_status(_ns())
+
+        out = capsys.readouterr().out
+        assert "backend: kokoro" in out
+        assert "[serve] asks for" not in out
+
+    def test_says_when_the_daemon_is_not_running_the_serve_backend(
+        self, mocker, monkeypatch, tmp_path, capsys
+    ):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text('[serve]\nbackend = "mlx"\nmodel_dir = "/m"\n', encoding="utf-8")
+        monkeypatch.setenv("STACKVOX_CONFIG", str(config_file))
+        self._running(mocker, tmp_path, (True, "kokoro"))
+
+        cli._cmd_status(_ns())
+
+        out = capsys.readouterr().out
+        assert "backend: kokoro" in out
+        assert "[serve] asks for mlx, but this daemon runs kokoro" in out
+
+    def test_a_daemon_too_old_to_answer_prints_no_backend(self, mocker, tmp_path, capsys):
+        self._running(mocker, tmp_path, (False, "err: missing text"))
+
+        cli._cmd_status(_ns())
+
+        assert "backend:" not in capsys.readouterr().out
