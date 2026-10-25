@@ -112,7 +112,7 @@ stackvox say "Hello"   # send text to the daemon (fails if not running)
 stackvox stop          # graceful shutdown, force-killed if it acknowledges but is still up after 5s
 ```
 
-Only one daemon starts at a time. A `serve` started while another is running, or still loading its model, exits straight away rather than loading a second copy.
+Only one daemon starts at a time per cache directory, which is also where its socket lives. A `serve` started while another is running there, or still loading its model, exits straight away rather than loading a second copy. One with a different `STACKVOX_CACHE_DIR` is a separate daemon and runs alongside.
 
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
 
