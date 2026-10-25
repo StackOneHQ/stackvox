@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import os
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 import soundfile as sf
 
 from stackvox import config, daemon, paths, updates
-from stackvox.engine import BACKENDS, DEFAULT_BACKEND, MLX_OPTIONS, Stackvox
+from stackvox.engine import BACKENDS, DEFAULT_BACKEND, MLX_OPTIONS, REFERENCE_PAIR, Stackvox
 from stackvox.mlx_backend import ModelLoadError
 from stackvox.text import normalize_for_speech
 from stackvox.voices import VoiceMix, VoiceParams, resolve
@@ -170,7 +171,7 @@ def _build_parser(defaults: config.Defaults | None = None) -> argparse.ArgumentP
 
     p_serve = sub.add_parser("serve", help="Run the daemon in the foreground")
     _add_voice_args(p_serve, defaults)
-    _add_backend_args(p_serve)
+    _add_backend_args(p_serve, from_config=True)
     _add_generation_args(p_serve)
 
     sub.add_parser("stop", help="Stop the running daemon")
@@ -225,12 +226,15 @@ def _voice_params(args: argparse.Namespace) -> tuple[VoiceParams, dict[str, Voic
     return params, custom
 
 
-def _add_backend_args(parser: argparse.ArgumentParser) -> None:
+def _add_backend_args(parser: argparse.ArgumentParser, *, from_config: bool = False) -> None:
+    # serve leaves --backend unset when it isn't given, so _apply_serve_config can
+    # tell "no flag" from an explicit --backend kokoro and consult [serve].
+    default_help = f"[serve] backend in config, then {DEFAULT_BACKEND}" if from_config else DEFAULT_BACKEND
     parser.add_argument(
         "--backend",
         choices=BACKENDS,
-        default=DEFAULT_BACKEND,
-        help="TTS backend (default: %(default)s). --voice/--lang apply to kokoro only",
+        default=None if from_config else DEFAULT_BACKEND,
+        help=f"TTS backend (default: {default_help}). --voice/--lang apply to kokoro only",
     )
     parser.add_argument(
         "--model-dir", type=Path, help="Local MLX Audio model directory (required for --backend mlx)"
@@ -261,18 +265,55 @@ def _generation_kwargs(args: argparse.Namespace) -> dict:
 def _validate_backend_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Fail fast on backend/option mismatches before loading a model.
 
-    ``say`` has no ``--backend``: the daemon decides, and rejects generation options
-    itself when it is running Kokoro.
+    For serve this runs after _apply_serve_config, so it checks what the flags and
+    ``[serve]`` add up to. ``say`` has no ``--backend``: the daemon decides, and
+    rejects generation options itself when it is running Kokoro. The reference
+    pair is checked for ``say`` too, since the engine refuses half a pair.
     """
+    if sum(getattr(args, key, None) is not None for key in REFERENCE_PAIR) == 1:
+        parser.error("--reference-audio and --reference-text must be given together")
     backend = getattr(args, "backend", None)
     if backend is None:
         return
     if backend == "mlx" and args.model_dir is None:
         parser.error("--backend mlx requires --model-dir")
-    if backend != "mlx" and (_generation_kwargs(args) or args.model_adapter is not None):
+    if backend != "mlx" and (
+        _generation_kwargs(args) or args.model_dir is not None or args.model_adapter is not None
+    ):
         parser.error(
-            "--model-adapter and generation options (--reference-audio, --instruct, ...) require --backend mlx"
+            "--model-dir, --model-adapter and generation options (--reference-audio, --instruct, ...) "
+            "require --backend mlx"
         )
+
+
+def _apply_serve_config(args: argparse.Namespace) -> None:
+    """Fill serve's backend settings from ``[serve]`` when no flag chose the model.
+
+    --backend or --model-dir on the command line means the flags describe the
+    model, so the table is left out entirely: its adapter and voice belong to
+    its own model, and a model someone named by flag should fail loudly rather
+    than fall back. Otherwise a flag still beats its matching key, with the
+    reference clip and its transcript treated as one setting.
+    ``backend_from_config`` lets _cmd_serve fall back to Kokoro when the
+    configured model can't load.
+    """
+    args.backend_from_config = False
+    if args.backend is None and args.model_dir is None:
+        serve_config = config.load_serve()
+        if serve_config.backend is not None:
+            args.backend = serve_config.backend
+            args.backend_from_config = True
+            args.model_dir = serve_config.model_dir
+            if args.model_adapter is None:
+                args.model_adapter = serve_config.model_adapter
+            reference_flagged = any(getattr(args, key) is not None for key in REFERENCE_PAIR)
+            for key, value in serve_config.generation.items():
+                if key in REFERENCE_PAIR and reference_flagged:
+                    continue
+                if getattr(args, key) is None:
+                    setattr(args, key, value)
+    if args.backend is None:
+        args.backend = DEFAULT_BACKEND
 
 
 def _add_normalize_args(parser: argparse.ArgumentParser, *, with_switch: bool) -> None:
@@ -509,16 +550,32 @@ def _cmd_normalize(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         params, custom = _voice_params(args)
-        daemon.serve(
-            voice=params.voice,
-            speed=params.speed,
-            lang=params.lang,
-            custom_voices=custom,
-            backend=args.backend,
-            model_dir=args.model_dir,
-            model_adapter=args.model_adapter,
-            **_generation_kwargs(args),
+        start_daemon = functools.partial(
+            daemon.serve, voice=params.voice, speed=params.speed, lang=params.lang, custom_voices=custom
         )
+        # Held across both attempts, so no other daemon can start in the gap
+        # between a failed configured backend and its fallback.
+        with daemon.startup_lock():
+            try:
+                start_daemon(
+                    backend=args.backend,
+                    model_dir=args.model_dir,
+                    model_adapter=args.model_adapter,
+                    **_generation_kwargs(args),
+                )
+            except ModelLoadError as exc:
+                # A daemon that exits here is restarted by whatever supervises it,
+                # fails the same way, and leaves the user with no voice at all. A
+                # model chosen by flag still fails, as before: whoever passed it
+                # asked for it.
+                if not getattr(args, "backend_from_config", False):
+                    raise
+                print(f"[stackvox] {exc}", file=sys.stderr)
+                print(
+                    f"[stackvox] the [serve] backend failed to load; serving {DEFAULT_BACKEND} instead",
+                    file=sys.stderr,
+                )
+                start_daemon()
     except RuntimeError as exc:
         print(f"[stackvox] {exc}", file=sys.stderr)
         return 1
@@ -565,6 +622,7 @@ def _cmd_status(_: argparse.Namespace) -> int:
                     f"daemon running {running_version} is newer than the {installed} client "
                     f"you just ran; no restart needed"
                 )
+        _print_running_backend()
     else:
         print("stopped")
         rc = 1
@@ -576,6 +634,25 @@ def _cmd_status(_: argparse.Namespace) -> int:
     else:
         print(f"version: {updates._current_version()}")
     return rc
+
+
+def _print_running_backend() -> None:
+    """Show the backend the daemon is serving, and say so when it isn't the [serve] one.
+
+    ``stackvox config`` shows what is configured. After a fallback, or with a
+    --backend flag, the daemon runs something else, and the voice alone doesn't
+    say which. A daemon too old to answer prints nothing.
+    """
+    got, running = daemon.backend()
+    if not got:
+        return
+    print(f"backend: {running}")
+    configured = config.load_serve().backend
+    if configured is not None and configured != running:
+        print(
+            f"[serve] asks for {configured}, but this daemon runs {running}: it was started with "
+            f"--backend, or the {configured} model failed to load (see the daemon's log)"
+        )
 
 
 def _cmd_voices(args: argparse.Namespace) -> int:
@@ -600,6 +677,14 @@ def _cmd_config(_: argparse.Namespace) -> int:
     print(f"voice: {defaults.voice}")
     print(f"speed: {defaults.speed}")
     print(f"lang:  {defaults.lang}")
+    serve_config = config.load_serve()
+    print(f"serve backend: {serve_config.backend or f'{DEFAULT_BACKEND} (built-in)'}")
+    if serve_config.model_dir is not None:
+        print(f"serve model_dir: {serve_config.model_dir}")
+    if serve_config.model_adapter is not None:
+        print(f"serve model_adapter: {serve_config.model_adapter}")
+    for key, value in serve_config.generation.items():
+        print(f"serve {key}: {value}")
     return 0
 
 
@@ -683,6 +768,8 @@ def main() -> int:
 
     parser = _build_parser(config.load_defaults())
     args = parser.parse_args(argv)
+    if args.cmd == "serve":
+        _apply_serve_config(args)
     _validate_backend_args(parser, args)
 
     if not args.cmd:

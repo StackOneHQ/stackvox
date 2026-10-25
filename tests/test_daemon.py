@@ -403,3 +403,132 @@ class TestWatchdog:
         time.sleep(0.1)
 
         exit_wedged.assert_not_called()
+
+
+def _hold_lock_elsewhere(path):
+    """Take the startup lock through a separate open file description, as another process would."""
+    import fcntl
+
+    handle = open(path, "a")  # noqa: SIM115 - closed by the caller
+    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return handle
+
+
+@pytest.fixture
+def private_paths(mocker, tmp_path):
+    mocker.patch.object(daemon, "LOCK_PATH", tmp_path / "daemon.lock")
+    mocker.patch.object(daemon, "PID_PATH", tmp_path / "daemon.pid")
+    mocker.patch.object(daemon, "SOCKET_PATH", tmp_path / "daemon.sock")
+    return tmp_path
+
+
+class TestStartupLock:
+    def test_refuses_while_another_holder_has_it(self, private_paths):
+        other = _hold_lock_elsewhere(private_paths / "daemon.lock")
+        try:
+            with pytest.raises(RuntimeError, match="already starting or running"), daemon.startup_lock():
+                pass
+        finally:
+            other.close()
+
+    def test_is_reentrant_within_a_process(self, private_paths):
+        with daemon.startup_lock(), daemon.startup_lock():
+            pass
+
+    def test_releases_on_exit(self, private_paths):
+        with daemon.startup_lock():
+            pass
+
+        _hold_lock_elsewhere(private_paths / "daemon.lock").close()  # would raise if still held
+
+    def test_serve_loads_nothing_while_another_daemon_holds_it(self, mocker, private_paths):
+        state = mocker.patch.object(daemon, "_DaemonState")
+        other = _hold_lock_elsewhere(private_paths / "daemon.lock")
+        try:
+            with pytest.raises(RuntimeError, match="already starting or running"):
+                daemon.serve()
+        finally:
+            other.close()
+        state.assert_not_called()
+
+    def test_serve_releases_it_when_startup_fails(self, mocker, private_paths):
+        mocker.patch.object(daemon, "_DaemonState", side_effect=RuntimeError("model failed to load"))
+
+        with pytest.raises(RuntimeError, match="model failed to load"):
+            daemon.serve()
+
+        _hold_lock_elsewhere(private_paths / "daemon.lock").close()  # would raise if still held
+
+    def test_bind_failure_is_a_clean_runtime_error(self, mocker, private_paths):
+        mocker.patch.object(daemon, "_DaemonState")
+        mocker.patch.object(daemon, "_UnixServer", side_effect=OSError(48, "Address already in use"))
+
+        with pytest.raises(RuntimeError, match="could not listen on"):
+            daemon.serve()
+
+    def test_is_held_for_the_whole_block(self, private_paths):
+        with daemon.startup_lock(), pytest.raises(BlockingIOError):
+            _hold_lock_elsewhere(private_paths / "daemon.lock")
+
+    def test_serve_holds_it_while_serving(self, mocker, private_paths):
+        """Pins the lock to the daemon's life, not just its startup."""
+        mocker.patch.object(daemon, "_DaemonState")
+        mocker.patch.object(daemon, "_check_for_update_async")
+        mocker.patch.object(daemon.signal, "signal")
+        held_while_serving = []
+
+        def serve_forever():
+            try:
+                _hold_lock_elsewhere(private_paths / "daemon.lock").close()
+                held_while_serving.append(False)
+            except BlockingIOError:
+                held_while_serving.append(True)
+
+        mocker.patch.object(daemon, "_UnixServer").return_value.serve_forever.side_effect = serve_forever
+
+        daemon.serve()
+
+        assert held_while_serving == [True]
+
+    def test_unopenable_lock_file_is_a_clean_runtime_error(self, mocker, private_paths):
+        mocker.patch.object(daemon, "open", create=True, side_effect=PermissionError(13, "Permission denied"))
+
+        with pytest.raises(RuntimeError, match="could not open the startup lock"), daemon.startup_lock():
+            pass
+
+    def test_other_lock_failures_are_a_clean_runtime_error(self, mocker, private_paths):
+        import errno
+
+        mocker.patch.object(daemon.fcntl, "flock", side_effect=OSError(errno.EIO, "Input/output error"))
+
+        with pytest.raises(RuntimeError, match="could not take the startup lock"), daemon.startup_lock():
+            pass
+
+    def test_unavailable_locking_starts_unlocked_with_one_warning(self, mocker, private_paths, caplog):
+        import errno
+        import logging
+
+        mocker.patch.object(
+            daemon.fcntl, "flock", side_effect=OSError(errno.ENOTSUP, "Operation not supported")
+        )
+        entered = []
+
+        with (
+            caplog.at_level(logging.WARNING, logger="stackvox.daemon"),
+            daemon.startup_lock(),
+            daemon.startup_lock(),
+        ):
+            entered.append(True)
+
+        assert entered == [True]
+        assert caplog.text.count("starting without the startup lock") == 1
+
+
+class TestBackendClient:
+    def test_reports_the_backend_the_daemon_names(self, mocker):
+        mocker.patch.object(daemon, "send", return_value=(False, "mlx"))
+        assert daemon.backend() == (True, "mlx")
+
+    def test_an_old_daemons_error_is_not_a_backend(self, mocker):
+        mocker.patch.object(daemon, "send", return_value=(False, "err: missing text"))
+        assert daemon.backend() == (False, "err: missing text")

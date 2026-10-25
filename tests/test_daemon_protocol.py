@@ -219,3 +219,8 @@ def test_cancel_stops_playback_and_keeps_daemon_up(server: ServerHarness):
     server.tts.stop.assert_called()  # current utterance aborted
     # unlike `stop`, the daemon stays up
     assert _roundtrip(server.sock, json.dumps({"command": "ping"}) + "\n") == "ok"
+
+
+def test_backend_reports_the_engine_backend(server: ServerHarness):
+    server.tts.backend = "mlx"
+    assert _roundtrip(server.sock, json.dumps({"command": "backend"}) + "\n") == "mlx"
