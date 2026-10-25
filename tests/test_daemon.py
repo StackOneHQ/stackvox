@@ -504,9 +504,7 @@ class TestStartupLock:
         with pytest.raises(RuntimeError, match="could not take the startup lock"), daemon.startup_lock():
             pass
 
-    def test_a_filesystem_without_locking_starts_unlocked_with_one_warning(
-        self, mocker, private_paths, caplog
-    ):
+    def test_unavailable_locking_starts_unlocked_with_one_warning(self, mocker, private_paths, caplog):
         import errno
         import logging
 

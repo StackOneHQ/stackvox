@@ -430,8 +430,11 @@ def _check_for_update_async() -> None:
 
 # True while this process is inside startup_lock(), so a nested call is a no-op.
 _holding_startup_lock = False
-# flock errors meaning the filesystem can't lock at all, rather than that it's held.
-_LOCKING_UNSUPPORTED = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK}
+# flock errors meaning locking isn't available here, rather than that someone holds
+# it: a filesystem without it, or (ENOLCK) a remote lock service that isn't there.
+# ENOLCK can also mean the kernel ran out of lock records. Going on unlocked then
+# only brings back the race the lock prevents, which beats a daemon that can't start.
+_LOCKING_UNAVAILABLE = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK}
 
 
 @contextmanager
@@ -446,8 +449,9 @@ def startup_lock() -> Iterator[None]:
     killed daemon never leaves it stale, and the file itself is left in place:
     deleting a lock file someone may hold reopens the race.
 
-    On a filesystem that can't lock at all it warns and carries on unlocked,
-    as daemons did before the lock existed, rather than refusing to start.
+    Where locking isn't available (a filesystem without it, a missing remote
+    lock service) it warns and carries on unlocked, as daemons did before the
+    lock existed, rather than refusing to start.
 
     Reentrant within a process, so the CLI can hold it across a failed backend
     and its fallback without another daemon slipping in between.
@@ -467,7 +471,7 @@ def startup_lock() -> Iterator[None]:
 
 
 def _acquire_startup_lock() -> IO[str] | None:
-    """The locked file, or None where the filesystem doesn't support locking."""
+    """The locked file, or None where locking isn't available."""
     try:
         LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
         handle = open(LOCK_PATH, "a")  # noqa: SIM115 - held for the daemon's lifetime, closed by startup_lock
@@ -482,10 +486,10 @@ def _acquire_startup_lock() -> IO[str] | None:
         ) from None
     except OSError as exc:
         handle.close()
-        if exc.errno not in _LOCKING_UNSUPPORTED:
+        if exc.errno not in _LOCKING_UNAVAILABLE:
             raise RuntimeError(f"could not take the startup lock {LOCK_PATH}: {exc}") from exc
         logger.warning(
-            "the filesystem under %s can't lock (%s); starting without the startup lock",
+            "locking isn't available for %s (%s); starting without the startup lock",
             LOCK_PATH,
             exc.strerror,
         )
