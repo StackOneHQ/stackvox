@@ -466,6 +466,65 @@ class TestStartupLock:
         with pytest.raises(RuntimeError, match="could not listen on"):
             daemon.serve()
 
+    def test_is_held_for_the_whole_block(self, private_paths):
+        with daemon.startup_lock(), pytest.raises(BlockingIOError):
+            _hold_lock_elsewhere(private_paths / "daemon.lock")
+
+    def test_serve_holds_it_while_serving(self, mocker, private_paths):
+        """Pins the lock to the daemon's life, not just its startup."""
+        mocker.patch.object(daemon, "_DaemonState")
+        mocker.patch.object(daemon, "_check_for_update_async")
+        mocker.patch.object(daemon.signal, "signal")
+        held_while_serving = []
+
+        def serve_forever():
+            try:
+                _hold_lock_elsewhere(private_paths / "daemon.lock").close()
+                held_while_serving.append(False)
+            except BlockingIOError:
+                held_while_serving.append(True)
+
+        mocker.patch.object(daemon, "_UnixServer").return_value.serve_forever.side_effect = serve_forever
+
+        daemon.serve()
+
+        assert held_while_serving == [True]
+
+    def test_unopenable_lock_file_is_a_clean_runtime_error(self, mocker, private_paths):
+        mocker.patch.object(daemon, "open", create=True, side_effect=PermissionError(13, "Permission denied"))
+
+        with pytest.raises(RuntimeError, match="could not open the startup lock"), daemon.startup_lock():
+            pass
+
+    def test_other_lock_failures_are_a_clean_runtime_error(self, mocker, private_paths):
+        import errno
+
+        mocker.patch.object(daemon.fcntl, "flock", side_effect=OSError(errno.EIO, "Input/output error"))
+
+        with pytest.raises(RuntimeError, match="could not take the startup lock"), daemon.startup_lock():
+            pass
+
+    def test_a_filesystem_without_locking_starts_unlocked_with_one_warning(
+        self, mocker, private_paths, caplog
+    ):
+        import errno
+        import logging
+
+        mocker.patch.object(
+            daemon.fcntl, "flock", side_effect=OSError(errno.ENOTSUP, "Operation not supported")
+        )
+        entered = []
+
+        with (
+            caplog.at_level(logging.WARNING, logger="stackvox.daemon"),
+            daemon.startup_lock(),
+            daemon.startup_lock(),
+        ):
+            entered.append(True)
+
+        assert entered == [True]
+        assert caplog.text.count("starting without the startup lock") == 1
+
 
 class TestBackendClient:
     def test_reports_the_backend_the_daemon_names(self, mocker):

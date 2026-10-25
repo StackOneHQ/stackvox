@@ -30,7 +30,8 @@ built-in's name replaces it.
 ``[serve]`` picks the backend ``stackvox serve`` starts when no ``--backend`` or
 ``--model-dir`` flag is given, plus that backend's model and generation defaults (the
 ``stackvox.engine.MLX_OPTIONS`` names). No other command acts on it. Relative
-paths in it are relative to the config file's folder.
+paths in it are relative to the config file's folder (a symlink's own folder,
+not its target's).
 """
 
 from __future__ import annotations
@@ -187,7 +188,8 @@ def load_serve(path: Path | None = None) -> ServeConfig:
     otherwise vanishes silently.
 
     Relative paths resolve against the config file's folder, not the working
-    directory, which for a daemon started by a supervisor is often ``/``.
+    directory, which for a daemon started by a supervisor is often ``/``. For a
+    symlinked config that is the link's folder, where the user sees the file.
     """
     p = path or config_path()
     data = _read(p)

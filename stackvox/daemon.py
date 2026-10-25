@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import errno
 import fcntl
 import json
 import logging
@@ -427,8 +428,10 @@ def _check_for_update_async() -> None:
     threading.Thread(target=_worker, daemon=True, name="update-check").start()
 
 
-# This process's hold on the startup lock, so a nested startup_lock() is a no-op.
-_startup_lock: IO[str] | None = None
+# True while this process is inside startup_lock(), so a nested call is a no-op.
+_holding_startup_lock = False
+# flock errors meaning the filesystem can't lock at all, rather than that it's held.
+_LOCKING_UNSUPPORTED = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOLCK}
 
 
 @contextmanager
@@ -443,15 +446,33 @@ def startup_lock() -> Iterator[None]:
     killed daemon never leaves it stale, and the file itself is left in place:
     deleting a lock file someone may hold reopens the race.
 
+    On a filesystem that can't lock at all it warns and carries on unlocked,
+    as daemons did before the lock existed, rather than refusing to start.
+
     Reentrant within a process, so the CLI can hold it across a failed backend
     and its fallback without another daemon slipping in between.
     """
-    global _startup_lock
-    if _startup_lock is not None:
+    global _holding_startup_lock
+    if _holding_startup_lock:
         yield
         return
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(LOCK_PATH, "a")  # noqa: SIM115 - held for the daemon's lifetime, closed below
+    handle = _acquire_startup_lock()
+    _holding_startup_lock = True
+    try:
+        yield
+    finally:
+        _holding_startup_lock = False
+        if handle is not None:
+            handle.close()
+
+
+def _acquire_startup_lock() -> IO[str] | None:
+    """The locked file, or None where the filesystem doesn't support locking."""
+    try:
+        LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(LOCK_PATH, "a")  # noqa: SIM115 - held for the daemon's lifetime, closed by startup_lock
+    except OSError as exc:
+        raise RuntimeError(f"could not open the startup lock {LOCK_PATH}: {exc}") from exc
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -459,12 +480,17 @@ def startup_lock() -> Iterator[None]:
         raise RuntimeError(
             f"another daemon is already starting or running (lock held on {LOCK_PATH})"
         ) from None
-    _startup_lock = handle
-    try:
-        yield
-    finally:
-        _startup_lock = None
+    except OSError as exc:
         handle.close()
+        if exc.errno not in _LOCKING_UNSUPPORTED:
+            raise RuntimeError(f"could not take the startup lock {LOCK_PATH}: {exc}") from exc
+        logger.warning(
+            "the filesystem under %s can't lock (%s); starting without the startup lock",
+            LOCK_PATH,
+            exc.strerror,
+        )
+        return None
+    return handle
 
 
 def serve(
