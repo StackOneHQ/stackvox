@@ -99,16 +99,20 @@ lang = "en-gb"
 
 CLI flags always win over config values, and config values always win over the built-in defaults. The one thing between a flag and the config is a [voice mix](#voice-mixes)'s own `lang` and `speed`, so `--voice chip` stays transatlantic even when `[defaults]` sets `lang = "en-us"`. A missing file is fine — built-ins apply. A malformed file logs a warning and is ignored.
 
+A `[serve]` table picks the backend the daemon starts with, for when something else starts it and you can't add flags. See [Local MLX models](#local-mlx-models-apple-silicon).
+
 ## Daemon mode
 
 Keeps the model resident so each subsequent call is instant:
 
 ```bash
 stackvox serve         # foreground; run with `nohup stackvox serve &` to background
-stackvox status        # is the daemon up? also shows version + any pending PyPI update
+stackvox status        # is the daemon up? also shows version, backend + any pending PyPI update
 stackvox say "Hello"   # send text to the daemon (fails if not running)
 stackvox stop          # graceful shutdown, force-killed if it acknowledges but is still up after 5s
 ```
+
+Only one daemon starts at a time per cache directory, which is also where its socket lives. A `serve` started while another is running there, or still loading its model, exits straight away rather than loading a second copy. One with a different `STACKVOX_CACHE_DIR` is a separate daemon and runs alongside.
 
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
 
@@ -207,6 +211,20 @@ stackvox say \
   --reference-text "The exact transcript of the reference audio." \
   "This request uses the resident model."
 ```
+
+To make a model the daemon's default, put it in the [config file](#configuration) instead. A plain `stackvox serve` then loads it, whatever starts the daemon (a login item, an app):
+
+```toml
+[serve]
+backend = "mlx"
+model_dir = "~/models/my-model"
+model_adapter = "~/.config/stackvox/adapters/my_model.py"  # optional
+# Optional generation defaults, the same names as the flags:
+reference_audio = "~/voices/reference.wav"
+reference_text = "The exact transcript of the reference audio."
+```
+
+Passing `--backend` or `--model-dir` ignores the table altogether, since the flags then describe the model. Any other flag beats its matching key, and the reference clip and its transcript count as one setting, so give both flags or neither. Relative paths are relative to the folder the config file is in (the link's folder, if it's a symlink), and an unknown key (`top-p` for `top_p`, say) gets a warning. Only `serve` acts on `[serve]`, so `speak` from an install without the mlx extra isn't affected. If the configured model fails to load, `serve` logs why and starts Kokoro instead, so a daemon that gets restarted automatically doesn't crash loop into silence, and `stackvox status` shows which backend is actually running. A model named on the command line still fails outright.
 
 Generation options (`--reference-audio`, `--reference-text`, `--instruct`,
 `--temperature`, `--top-p`, `--top-k`) are forwarded only when set, so each

@@ -1,4 +1,4 @@
-"""Filesystem paths used across stackvox: model cache, daemon socket, pid file.
+"""Filesystem paths used across stackvox: model cache, daemon socket, pid file, lock.
 
 Centralising these avoids leaking private helpers between modules and keeps
 the `STACKVOX_CACHE_DIR` / `STACKVOX_SOCKET` override rules in one place.
@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def cache_dir() -> Path:
-    """Directory holding the model, voice pack, socket, and pid file.
+    """Directory holding the model, voice pack, socket, pid file and startup lock.
 
     Honours `STACKVOX_CACHE_DIR`; defaults to `~/.cache/stackvox`.
     """
@@ -34,3 +34,8 @@ def socket_path() -> Path:
 
 def pid_path() -> Path:
     return cache_dir() / "daemon.pid"
+
+
+def lock_path() -> Path:
+    """Startup lock the daemon holds for its whole life (see ``daemon.startup_lock``)."""
+    return cache_dir() / "daemon.lock"

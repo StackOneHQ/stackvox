@@ -34,6 +34,8 @@ BACKENDS = ("kokoro", "mlx")
 # Per-request generation options only the MLX backend understands. Kokoro
 # rejects them rather than silently dropping a voice-cloning request.
 MLX_OPTIONS = ("reference_audio", "reference_text", "instruct", "temperature", "top_p", "top_k")
+# Voice cloning takes both or neither: the mlx backend refuses one alone.
+REFERENCE_PAIR = ("reference_audio", "reference_text")
 
 # Streaming playback smoothing: play a touch of silence before the first word so
 # output-device warm-up (notably a Bluetooth codec/profile switch) lands during
