@@ -351,7 +351,7 @@ def state(mocker, exit_wedged):
         yield daemon_state
     finally:
         daemon_state.shutdown()
-        daemon_state.watchdog.join(timeout=1.0)
+        daemon_state.watchdog.join()
 
 
 def _wait_until(condition, timeout: float = 1.0) -> None:
