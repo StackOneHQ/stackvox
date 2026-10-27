@@ -281,6 +281,7 @@ class _DaemonState:
                 accepted_at, req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
+            dequeued_at = time.monotonic()
             # Armed before the audio refresh as well as playback: both call into
             # PortAudio, and either can block on a CoreAudio lock for good.
             self.deadline = time.monotonic() + _utterance_budget(req["text"])
@@ -291,7 +292,6 @@ class _DaemonState:
                 generation_kwargs: dict[str, Any] = {
                     key: req.get(key, self.generation_defaults.get(key)) for key in MLX_OPTIONS
                 }
-                dequeued_at = time.monotonic()
                 playback = self.tts.speak(
                     req["text"],
                     voice=req.get("voice"),

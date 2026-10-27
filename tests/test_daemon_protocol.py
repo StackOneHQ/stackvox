@@ -155,14 +155,26 @@ def test_generation_request_overrides_serve_defaults(server: ServerHarness):
 def test_full_queue_returns_busy(server: ServerHarness):
     from stackvox import daemon
 
-    # Block the worker so the queue can actually fill up.
-    server.state.submit({"text": "a"})
-    server.state.submit({"text": "b"})
-    assert server.state.queue.full() or server.state.queue.qsize() >= daemon.MAX_QUEUE
+    # Block the worker on its first request so the queue can actually fill up.
+    speaking = threading.Event()
+    release = threading.Event()
 
-    reply = _roundtrip(server.sock, json.dumps({"text": "overflow"}) + "\n")
-    # At least one of the sentinel messages OR busy — queue may drain if worker picks up first.
-    assert reply in {"ok", "busy"}
+    def speak(*args: Any, **kwargs: Any) -> None:
+        speaking.set()
+        release.wait(5)
+
+    server.tts.speak.side_effect = speak
+    server.state.submit({"text": "busy"})
+    assert speaking.wait(5)
+    try:
+        for index in range(daemon.MAX_QUEUE):
+            assert server.state.submit({"text": f"queued {index}"})
+
+        reply = _roundtrip(server.sock, json.dumps({"text": "overflow"}) + "\n")
+    finally:
+        release.set()
+
+    assert reply == "busy"
 
 
 def test_worker_refreshes_audio_only_when_dirty(server: ServerHarness):

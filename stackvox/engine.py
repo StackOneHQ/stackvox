@@ -691,9 +691,9 @@ def speak(
     speed: float = DEFAULT_SPEED,
     lang: str = DEFAULT_LANG,
     blocking: bool = True,
-) -> None:
+) -> Playback | None:
     """One-shot: synthesize and play. Reuses a module-level engine across calls."""
-    _get_default().speak(text, voice=voice, speed=speed, lang=lang, blocking=blocking)
+    return _get_default().speak(text, voice=voice, speed=speed, lang=lang, blocking=blocking)
 
 
 def synthesize(
