@@ -337,7 +337,11 @@ def exit_wedged(mocker):
 def state(mocker, exit_wedged):
     """A _DaemonState with the engine and the audio side mocked out, and a
     watchdog that polls fast enough to test. The poll interval is patched before
-    the watchdog starts, because its first wait reads it once."""
+    the watchdog starts, because its first wait reads it once.
+
+    Teardown waits for the watchdog to stop before the mocks are undone. A
+    watchdog paused between spotting an overrun and calling _exit_wedged would
+    otherwise wake in the next test and call its mock, or the real exit."""
     mocker.patch.object(daemon, "WATCHDOG_POLL_SECONDS", 0.01)
     mocker.patch.object(daemon, "Stackvox")
     mocker.patch.object(daemon, "_refresh_audio_devices")
@@ -347,6 +351,7 @@ def state(mocker, exit_wedged):
         yield daemon_state
     finally:
         daemon_state.shutdown()
+        daemon_state.watchdog.join()
 
 
 def _wait_until(condition, timeout: float = 1.0) -> None:
