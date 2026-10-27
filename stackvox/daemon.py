@@ -272,7 +272,8 @@ class _DaemonState:
         self.deadline: float | None = None
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
-        threading.Thread(target=self._watchdog, daemon=True, name="stackvox-watchdog").start()
+        self.watchdog = threading.Thread(target=self._watchdog, daemon=True, name="stackvox-watchdog")
+        self.watchdog.start()
         _start_device_watcher()
 
     def _worker(self) -> None:
