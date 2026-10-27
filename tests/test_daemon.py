@@ -417,6 +417,8 @@ class TestWorkerLog:
             state.submit({"text": "hello"})
             _wait_until(lambda: state.tts.speak.called and state.deadline is None)
 
+        assert state.tts.speak.called
+        assert state.deadline is None
         assert not any("spoke" in message for message in caplog.messages)
 
 
