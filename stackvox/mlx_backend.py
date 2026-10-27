@@ -32,6 +32,11 @@ _LOAD_LOCK = Lock()
 CHUNK_CHARS = 170
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# MLX keeps freed GPU buffers in its own cache for reuse, and by default lets it
+# grow to the device's recommended working set (tens of GB on a large Mac). A
+# long-running daemon generating on and off would hold all of it, so cap it.
+_BUFFER_CACHE_LIMIT_BYTES = 1 << 30
+
 # Cap on how much of an underlying error is echoed; MLX Audio's messages can
 # list hundreds of parameter names.
 _ERROR_SUMMARY_CHARS = 200
@@ -161,6 +166,18 @@ def _load_model(model_dir: Path, adapter_path: Path | None) -> Any:
             ) from exc
 
 
+def _limit_buffer_cache() -> None:
+    import mlx.core as mx
+
+    mx.set_cache_limit(_BUFFER_CACHE_LIMIT_BYTES)
+
+
+def _clear_buffer_cache() -> None:
+    import mlx.core as mx
+
+    mx.clear_cache()
+
+
 def _load_audio(path: Path, sample_rate: int) -> Any:
     from mlx_audio.utils import load_audio
 
@@ -209,6 +226,7 @@ class MlxBackend:
             raise ModelLoadError(f"model directory not found: {model_dir}")
         self.model_dir = model_dir
         self._mlx_thread = _MlxThread()
+        self._mlx_thread.call(_limit_buffer_cache)
         self._model: Any = self._mlx_thread.call(lambda: _load_model(model_dir, adapter))
 
     def synthesize(
@@ -242,20 +260,28 @@ class MlxBackend:
         self, text: str, kwargs: dict[str, Any], audio_path: Path | None, reference_text: str | None
     ) -> tuple[np.ndarray, int]:
         """Runs on the MLX thread: decoding the reference and converting results
-        to NumPy both evaluate MLX arrays, so they belong here too."""
-        if audio_path is not None:
-            kwargs = {
-                **kwargs,
-                "ref_audio": _load_audio(audio_path, self._model.sample_rate),
-                "ref_text": reference_text,
-            }
-        results = []
-        for chunk in split_long_text(text):
-            results.extend(self._model.generate(text=chunk, **kwargs))
-        if not results:
-            raise RuntimeError("model produced no audio")
-        sample_rates = {result.sample_rate for result in results}
-        if len(sample_rates) != 1:
-            raise RuntimeError("model returned segments with different sample rates")
-        segments = [np.asarray(result.audio, dtype=np.float32) for result in results]
-        return np.ascontiguousarray(np.concatenate(segments)), sample_rates.pop()
+        to NumPy both evaluate MLX arrays, so they belong here too.
+
+        Empties MLX's buffer cache before returning: models don't reliably do it
+        themselves, and what one request leaves behind is mostly sized for that
+        request rather than the next.
+        """
+        try:
+            if audio_path is not None:
+                kwargs = {
+                    **kwargs,
+                    "ref_audio": _load_audio(audio_path, self._model.sample_rate),
+                    "ref_text": reference_text,
+                }
+            results = []
+            for chunk in split_long_text(text):
+                results.extend(self._model.generate(text=chunk, **kwargs))
+            if not results:
+                raise RuntimeError("model produced no audio")
+            sample_rates = {result.sample_rate for result in results}
+            if len(sample_rates) != 1:
+                raise RuntimeError("model returned segments with different sample rates")
+            segments = [np.asarray(result.audio, dtype=np.float32) for result in results]
+            return np.ascontiguousarray(np.concatenate(segments)), sample_rates.pop()
+        finally:
+            _clear_buffer_cache()

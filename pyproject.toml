@@ -130,7 +130,7 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 # Third-party deps without inline type stubs (or, for `tomli`, a 3.10-only
 # fallback that's not installed on the typechecker's Python).
-module = ["kokoro_onnx", "mlx_audio.*", "onnxruntime", "sounddevice", "soundfile", "tomli"]
+module = ["kokoro_onnx", "mlx.*", "mlx_audio.*", "onnxruntime", "sounddevice", "soundfile", "tomli"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
