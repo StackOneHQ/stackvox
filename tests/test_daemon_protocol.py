@@ -156,8 +156,8 @@ def test_full_queue_returns_busy(server: ServerHarness):
     from stackvox import daemon
 
     # Block the worker so the queue can actually fill up.
-    server.state.queue.put_nowait({"text": "a"})
-    server.state.queue.put_nowait({"text": "b"})
+    server.state.submit({"text": "a"})
+    server.state.submit({"text": "b"})
     assert server.state.queue.full() or server.state.queue.qsize() >= daemon.MAX_QUEUE
 
     reply = _roundtrip(server.sock, json.dumps({"text": "overflow"}) + "\n")

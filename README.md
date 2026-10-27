@@ -114,6 +114,14 @@ stackvox stop          # graceful shutdown, force-killed if it acknowledges but 
 
 Only one daemon starts at a time per cache directory, which is also where its socket lives. A `serve` started while another is running there, or still loading its model, exits straight away rather than loading a second copy. One with a different `STACKVOX_CACHE_DIR` is a separate daemon and runs alongside.
 
+The daemon logs a line to stderr for every request it plays, so you can see how long speech takes to start on your machine (the text itself never goes in the log):
+
+```text
+[stackvox] spoke 84 chars: first audio after 1.2s (0.0s queued), finished after 6.4s, 5.1s of audio
+```
+
+Times count from when the daemon accepted the request, so waiting behind another request is included.
+
 stackvox checks PyPI for newer versions but only at two moments — when you run `stackvox status` and at daemon startup. The script-heavy paths (`say`, `speak`, `stackvox-say`, hooks, CI) never make a network call. To see notices on every invocation set `STACKVOX_UPDATE_NOTICE=1`. To disable the check entirely set `STACKVOX_NO_UPDATE_CHECK=1`. The check is auto-skipped when common CI env vars (`CI`, `GITHUB_ACTIONS`, etc.) are set so build logs stay clean.
 
 ## `stackvox-say` (bash helper, ~13ms)

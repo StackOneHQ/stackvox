@@ -8,8 +8,10 @@ import queue
 import re
 import sys
 import threading
+import time
 import urllib.request
 from collections.abc import Generator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,6 +44,20 @@ REFERENCE_PAIR = ("reference_audio", "reference_text")
 # silence, and ramp the opening samples up from zero to avoid an onset click.
 _PRIME_SILENCE_SECONDS = 0.12
 _FADE_IN_SECONDS = 0.008
+
+
+@dataclass(frozen=True)
+class Playback:
+    """What a blocking ``speak()`` played.
+
+    ``first_audio_at`` is the ``time.monotonic()`` reading when the first chunk
+    reached the output device, or None if nothing played (blank text, or
+    cancelled before the first chunk was ready).
+    """
+
+    first_audio_at: float | None
+    audio_seconds: float
+
 
 _MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 _VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
@@ -366,12 +382,13 @@ class Stackvox:
         temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
-    ) -> None:
+    ) -> Playback | None:
         """Synthesize and play through the system default output device.
 
         Streams sentence by sentence: the first sentence starts playing as soon
         as it is synthesized (~0.2s) while the rest synthesize in the background,
-        rather than waiting for the whole text to synthesize first.
+        rather than waiting for the whole text to synthesize first. A blocking
+        call returns what it played; a non-blocking one returns None.
         """
         self._cancel_active()
         # Each stream gets its own cancellation token, so a later speak() (or a
@@ -379,7 +396,7 @@ class Stackvox:
         stop_event = threading.Event()
         self._stop_event = stop_event
         if blocking:
-            self._stream_play(
+            return self._stream_play(
                 text,
                 stop_event,
                 voice=voice,
@@ -392,7 +409,6 @@ class Stackvox:
                 top_p=top_p,
                 top_k=top_k,
             )
-            return
 
         def _run() -> None:
             try:
@@ -414,6 +430,7 @@ class Stackvox:
 
         self._play_thread = threading.Thread(target=_run, daemon=True, name="stackvox-play")
         self._play_thread.start()
+        return None
 
     def _synthesize_chunks(
         self,
@@ -512,7 +529,7 @@ class Stackvox:
         temperature: float | None = None,
         top_p: float | None = None,
         top_k: int | None = None,
-    ) -> None:
+    ) -> Playback:
         """Play each sentence through the output device as it becomes available.
 
         Consuming ``_synthesize_chunks`` is what makes the first sentence play
@@ -534,6 +551,8 @@ class Stackvox:
             top_k=top_k,
         )
         stream: sd.OutputStream | None = None
+        first_audio_at: float | None = None
+        audio_seconds = 0.0
         try:
             for samples, sample_rate in chunks:
                 samples = np.ascontiguousarray(samples, dtype="float32")
@@ -551,12 +570,14 @@ class Stackvox:
                     if prime > 0:
                         stream.write(np.zeros(prime, dtype="float32"))
                     samples = _fade_in(samples, sample_rate)
+                    first_audio_at = time.monotonic()
                 try:
                     stream.write(samples)
                 except Exception:
                     if stop_event.is_set():
                         break  # aborted by stop(); expected
                     raise
+                audio_seconds += len(samples) / sample_rate
         finally:
             # Release the output device before draining the synth thread, so a
             # stop() doesn't hold the device open for however long the in-flight
@@ -570,6 +591,7 @@ class Stackvox:
                 except Exception:
                     logger.debug("stream teardown failed", exc_info=True)
             chunks.close()
+        return Playback(first_audio_at=first_audio_at, audio_seconds=audio_seconds)
 
     def _stream_chunks(self, text: str) -> list[str]:
         """Units of text synthesized and played one at a time.

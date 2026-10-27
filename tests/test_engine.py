@@ -270,6 +270,28 @@ class TestSpeak:
         assert first_audio[0] == 0.0  # ramp starts at silence
         assert first_audio[-1] == 1.0  # ramp completes, body untouched
 
+    def test_blocking_reports_what_it_played(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(24000, dtype=np.float32), 24000)
+
+        actual = engine.Stackvox().speak("One. Two. Three.")
+
+        assert actual.first_audio_at is not None
+        assert actual.audio_seconds == 3.0
+
+    def test_blank_text_reports_no_audio(self, fake_kokoro, fake_audio):
+        actual = engine.Stackvox().speak("   ")
+
+        assert actual == engine.Playback(first_audio_at=None, audio_seconds=0.0)
+
+    def test_non_blocking_reports_nothing(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
+        tts = engine.Stackvox()
+
+        actual = tts.speak("hi there", blocking=False)
+        tts._play_thread.join(timeout=5)
+
+        assert actual is None
+
     def test_non_blocking_plays_in_background_thread(self, fake_kokoro, fake_audio):
         fake_kokoro.return_value.create.return_value = (np.zeros(10, dtype=np.float32), 24000)
         tts = engine.Stackvox()

@@ -5,12 +5,14 @@ wedge watchdog. The protocol/handler tests live in test_daemon_protocol.py.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
 import pytest
 
 from stackvox import daemon
+from stackvox.engine import Playback
 
 
 class TestPidAlive:
@@ -374,6 +376,48 @@ class TestWorkerDeadline:
 
         assert state.tts.speak.called
         assert state.deadline is None
+
+
+class TestUtteranceSummary:
+    def test_times_count_from_when_the_request_was_accepted(self):
+        playback = Playback(first_audio_at=107.0, audio_seconds=3.5)
+
+        actual = daemon._utterance_summary(84, 100.0, 100.5, 111.25, playback)
+
+        assert actual == (
+            "spoke 84 chars: first audio after 7.0s (0.5s queued), finished after 11.2s, 3.5s of audio"
+        )
+
+    def test_says_when_nothing_played(self):
+        playback = Playback(first_audio_at=None, audio_seconds=0.0)
+
+        actual = daemon._utterance_summary(5, 100.0, 100.0, 100.5, playback)
+
+        assert actual == "spoke 5 chars: no audio played, finished after 0.5s"
+
+
+class TestWorkerLog:
+    def test_logs_each_request_it_plays(self, state, caplog):
+        state.tts.speak.side_effect = lambda *args, **kwargs: Playback(
+            first_audio_at=time.monotonic(), audio_seconds=1.5
+        )
+
+        with caplog.at_level(logging.INFO, logger="stackvox.daemon"):
+            state.submit({"text": "hello"})
+            _wait_until(lambda: any("spoke" in message for message in caplog.messages))
+
+        [actual] = [message for message in caplog.messages if "spoke" in message]
+        assert actual.startswith("spoke 5 chars: first audio after ")
+        assert actual.endswith(", 1.5s of audio")
+
+    def test_logs_nothing_when_playback_fails(self, state, caplog):
+        state.tts.speak.side_effect = RuntimeError("device gone")
+
+        with caplog.at_level(logging.INFO, logger="stackvox.daemon"):
+            state.submit({"text": "hello"})
+            _wait_until(lambda: state.tts.speak.called and state.deadline is None)
+
+        assert not any("spoke" in message for message in caplog.messages)
 
 
 class TestOverrun:

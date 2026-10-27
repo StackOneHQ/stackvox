@@ -46,6 +46,7 @@ from stackvox.engine import (
     DEFAULT_SPEED,
     DEFAULT_VOICE,
     MLX_OPTIONS,
+    Playback,
     Stackvox,
 )
 from stackvox.paths import lock_path, pid_path, socket_path
@@ -224,6 +225,22 @@ def _exit_wedged() -> None:
     os._exit(os.EX_SOFTWARE)
 
 
+def _utterance_summary(
+    chars: int, accepted_at: float, dequeued_at: float, finished_at: float, playback: Playback
+) -> str:
+    """One log line per request. Times count from when the daemon accepted it;
+    the text itself stays out of the log."""
+    finished = finished_at - accepted_at
+    if playback.first_audio_at is None:
+        return f"spoke {chars} chars: no audio played, finished after {finished:.1f}s"
+    first_audio = playback.first_audio_at - accepted_at
+    queued = dequeued_at - accepted_at
+    return (
+        f"spoke {chars} chars: first audio after {first_audio:.1f}s ({queued:.1f}s queued), "
+        f"finished after {finished:.1f}s, {playback.audio_seconds:.1f}s of audio"
+    )
+
+
 class _DaemonState:
     def __init__(
         self,
@@ -246,7 +263,9 @@ class _DaemonState:
             model_adapter=model_adapter,
         )
         self.generation_defaults = generation_defaults or {}
-        self.queue: queue.Queue[dict] = queue.Queue(maxsize=MAX_QUEUE)
+        # Each request is queued with the time it was accepted, so the log can
+        # report latency as the client saw it, waiting in the queue included.
+        self.queue: queue.Queue[tuple[float, dict]] = queue.Queue(maxsize=MAX_QUEUE)
         self.stop_event = threading.Event()
         # Monotonic time by which the worker must finish its current request;
         # None while idle.
@@ -259,7 +278,7 @@ class _DaemonState:
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
-                req = self.queue.get(timeout=WORKER_POLL_SECONDS)
+                accepted_at, req = self.queue.get(timeout=WORKER_POLL_SECONDS)
             except queue.Empty:
                 continue
             # Armed before the audio refresh as well as playback: both call into
@@ -272,7 +291,8 @@ class _DaemonState:
                 generation_kwargs: dict[str, Any] = {
                     key: req.get(key, self.generation_defaults.get(key)) for key in MLX_OPTIONS
                 }
-                self.tts.speak(
+                dequeued_at = time.monotonic()
+                playback = self.tts.speak(
                     req["text"],
                     voice=req.get("voice"),
                     speed=req.get("speed"),
@@ -284,6 +304,13 @@ class _DaemonState:
                 # Failed playback might be a stale audio context; mark dirty
                 # so the next request refreshes before trying again.
                 _audio_dirty.set()
+            else:
+                if isinstance(playback, Playback):
+                    logger.info(
+                        _utterance_summary(
+                            len(req["text"]), accepted_at, dequeued_at, time.monotonic(), playback
+                        )
+                    )
             self.deadline = None
 
     def overrun(self, now: float) -> float | None:
@@ -306,7 +333,7 @@ class _DaemonState:
 
     def submit(self, req: dict) -> bool:
         try:
-            self.queue.put_nowait(req)
+            self.queue.put_nowait((time.monotonic(), req))
             return True
         except queue.Full:
             return False
