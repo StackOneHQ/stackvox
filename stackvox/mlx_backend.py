@@ -37,6 +37,8 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 # long-running daemon generating on and off would hold all of it, so cap it.
 _BUFFER_CACHE_LIMIT_BYTES = 1 << 30
 
+_MISSING_MLX = "the mlx backend requires MLX Audio; install it with `pip install 'stackvox[mlx]'`"
+
 # Cap on how much of an underlying error is echoed; MLX Audio's messages can
 # list hundreds of parameter names.
 _ERROR_SUMMARY_CHARS = 200
@@ -143,9 +145,7 @@ def _load_model(model_dir: Path, adapter_path: Path | None) -> Any:
     try:
         from mlx_audio.tts.utils import load_model
     except ImportError as exc:  # pragma: no cover - depends on optional install
-        raise ModelLoadError(
-            "the mlx backend requires MLX Audio; install it with `pip install 'stackvox[mlx]'`"
-        ) from exc
+        raise ModelLoadError(_MISSING_MLX) from exc
     if adapter_path is None:
         with _LOAD_LOCK:
             try:
@@ -167,7 +167,10 @@ def _load_model(model_dir: Path, adapter_path: Path | None) -> Any:
 
 
 def _limit_buffer_cache() -> None:
-    import mlx.core as mx
+    try:
+        import mlx.core as mx
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise ModelLoadError(_MISSING_MLX) from exc
 
     mx.set_cache_limit(_BUFFER_CACHE_LIMIT_BYTES)
 
@@ -264,24 +267,31 @@ class MlxBackend:
 
         Empties MLX's buffer cache before returning: models don't reliably do it
         themselves, and what one request leaves behind is mostly sized for that
-        request rather than the next.
+        request rather than the next. The work lives in ``_render`` so its MLX
+        arrays are released, and their buffers already in the cache, by the
+        time it is cleared.
         """
         try:
-            if audio_path is not None:
-                kwargs = {
-                    **kwargs,
-                    "ref_audio": _load_audio(audio_path, self._model.sample_rate),
-                    "ref_text": reference_text,
-                }
-            results = []
-            for chunk in split_long_text(text):
-                results.extend(self._model.generate(text=chunk, **kwargs))
-            if not results:
-                raise RuntimeError("model produced no audio")
-            sample_rates = {result.sample_rate for result in results}
-            if len(sample_rates) != 1:
-                raise RuntimeError("model returned segments with different sample rates")
-            segments = [np.asarray(result.audio, dtype=np.float32) for result in results]
-            return np.ascontiguousarray(np.concatenate(segments)), sample_rates.pop()
+            return self._render(text, kwargs, audio_path, reference_text)
         finally:
             _clear_buffer_cache()
+
+    def _render(
+        self, text: str, kwargs: dict[str, Any], audio_path: Path | None, reference_text: str | None
+    ) -> tuple[np.ndarray, int]:
+        if audio_path is not None:
+            kwargs = {
+                **kwargs,
+                "ref_audio": _load_audio(audio_path, self._model.sample_rate),
+                "ref_text": reference_text,
+            }
+        results = []
+        for chunk in split_long_text(text):
+            results.extend(self._model.generate(text=chunk, **kwargs))
+        if not results:
+            raise RuntimeError("model produced no audio")
+        sample_rates = {result.sample_rate for result in results}
+        if len(sample_rates) != 1:
+            raise RuntimeError("model returned segments with different sample rates")
+        segments = [np.asarray(result.audio, dtype=np.float32) for result in results]
+        return np.ascontiguousarray(np.concatenate(segments)), sample_rates.pop()

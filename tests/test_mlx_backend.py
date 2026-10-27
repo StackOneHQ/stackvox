@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import sys
 import threading
+import weakref
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
 
 from stackvox import mlx_backend
+
+_limit_buffer_cache = mlx_backend._limit_buffer_cache
 
 
 @pytest.fixture(autouse=True)
@@ -270,6 +273,29 @@ class TestBufferCache:
             engine.synthesize("hello")
 
         buffer_cache.clear.assert_called_once()
+
+    def test_is_cleared_after_the_generated_audio_is_released(self, backend, buffer_cache):
+        engine, model = backend
+
+        class Result:
+            audio = np.ones(1)
+            sample_rate = 44100
+
+        pending = [Result()]
+        released = weakref.ref(pending[0])
+        model.generate.side_effect = lambda **kwargs: iter([pending.pop()])
+        alive: list[bool] = []
+        buffer_cache.clear.side_effect = lambda: alive.append(released() is not None)
+
+        engine.synthesize("hello")
+
+        assert alive == [False]
+
+    def test_missing_mlx_is_a_load_error(self, mocker):
+        mocker.patch.dict(sys.modules, {"mlx": None, "mlx.core": None})
+
+        with pytest.raises(mlx_backend.ModelLoadError, match="requires MLX Audio"):
+            _limit_buffer_cache()
 
 
 class TestSwapped:
