@@ -31,8 +31,9 @@ _LOAD_LOCK = Lock()
 # bring the first streamed audio forward.
 CHUNK_CHARS = 170
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
-# Over-long sentences are cut here before falling back to word boundaries, so
-# the pause between chunks lands where a speaker would take a breath. A typed
+# Over-long sentences, and the next sentence when a short chunk is topped up,
+# are cut here before falling back to word boundaries, so the pause between
+# chunks lands where a speaker would take a breath. A typed
 # dash counts only with space either side, so hyphenated words stay whole.
 _CLAUSE_BOUNDARY = re.compile(r"(?<=[,;:—–])\s+|(?<=\s-)\s+|(?<=\s--)\s+")
 # Streaming leaves a gap whenever a chunk takes longer to generate than the one

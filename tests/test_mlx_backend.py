@@ -353,9 +353,10 @@ class TestSplitLongText:
         second = " ".join(["beta"] * 20) + "."
         assert mlx_backend.split_long_text(f"{first} {second}") == [first, second]
 
-    def test_hyphenated_words_are_not_clause_boundaries(self):
-        sentence = " ".join(["well-known"] * 20) + "."
-        assert all(chunk.endswith(("well-known", ".")) for chunk in mlx_backend.split_long_text(sentence))
+    def test_hyphen_without_a_space_before_it_is_not_a_clause_boundary(self):
+        clause = " ".join(["alpha"] * 20) + " pre- and post-war " + " ".join(["beta"] * 20) + ","
+        chunks = mlx_backend.split_long_text(f"{clause} gamma.")
+        assert chunks[0].split()[-1] != "pre-"
 
     def test_overlong_sentence_splits_at_clauses_before_words(self):
         sentence = (
@@ -376,12 +377,14 @@ class TestSplitLongText:
 
     def test_short_sentence_takes_whole_clauses_when_they_fill_it(self):
         clause = " ".join(["alpha"] * 12) + ","
-        long_sentence = f"{clause} " + " ".join(["beta"] * 20) + "."
+        long_sentence = f"{clause} " + " ".join(["beta"] * 19) + "."
+        assert len(long_sentence) <= mlx_backend.CHUNK_CHARS < len(f"Yes. {long_sentence}")
         chunks = mlx_backend.split_long_text(f"Yes. {long_sentence}")
         assert chunks[0] == f"Yes. {clause}"
 
     def test_short_sentence_takes_words_when_the_opening_clause_is_too_short(self):
-        long_sentence = "Well, " + " ".join(["alpha"] * 28) + "."
+        long_sentence = "Well, " + " ".join(["alpha"] * 27) + "."
+        assert len(long_sentence) <= mlx_backend.CHUNK_CHARS < len(f"Yes. {long_sentence}")
         chunks = mlx_backend.split_long_text(f"Yes. {long_sentence}")
         assert chunks[0].startswith("Yes. Well, alpha")
         assert len(chunks[0]) >= mlx_backend._MIN_CHUNK_CHARS

@@ -244,11 +244,11 @@ characters), so the first audio arrives once the first chunk is generated;
 short chunks also stop models drifting off-script on long text. A sentence too
 long for one chunk is split at a comma, semicolon, colon or dash where it has
 one. A chunk under 60 characters is filled up to the limit from the start of
-the next sentence rather than sent alone, at a clause boundary where one fits
-and between words otherwise, since a short chunk ahead of a long one leaves a
-pause while the long one generates. That means a reply opening on a short
-sentence waits for a full-size first chunk. Models slower than real time will
-still pause between chunks.
+the next sentence or clause rather than sent alone, at a clause boundary where
+that reaches 60 characters and between words otherwise, since a short chunk
+ahead of a long one leaves a pause while the long one generates. That means a
+reply opening on a short sentence waits for a full-size first chunk. Models
+slower than real time will still pause between chunks.
 
 ### Model adapters
 
