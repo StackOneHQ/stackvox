@@ -347,6 +347,16 @@ class TestSplitLongText:
         assert all(len(chunk) <= 50 for chunk in chunks)
         assert " ".join(chunks).split() == ["word"] * 200
 
+    @pytest.mark.parametrize("separator", [",", ";", ":", " —", " –", " -", " --"])
+    def test_overlong_sentence_splits_at_each_clause_separator(self, separator):
+        first = " ".join(["alpha"] * 20) + separator
+        second = " ".join(["beta"] * 20) + "."
+        assert mlx_backend.split_long_text(f"{first} {second}") == [first, second]
+
+    def test_hyphenated_words_are_not_clause_boundaries(self):
+        sentence = " ".join(["well-known"] * 20) + "."
+        assert all(chunk.endswith(("well-known", ".")) for chunk in mlx_backend.split_long_text(sentence))
+
     def test_overlong_sentence_splits_at_clauses_before_words(self):
         sentence = (
             ", ".join(f"this is clause number {index} of one long sentence" for index in range(8)) + "."
@@ -364,6 +374,25 @@ class TestSplitLongText:
         assert len(chunks[0]) <= mlx_backend.CHUNK_CHARS
         assert " ".join(chunks) == f"Yes. {long_sentence}"
 
+    def test_short_sentence_takes_whole_clauses_when_they_fill_it(self):
+        clause = " ".join(["alpha"] * 12) + ","
+        long_sentence = f"{clause} " + " ".join(["beta"] * 20) + "."
+        chunks = mlx_backend.split_long_text(f"Yes. {long_sentence}")
+        assert chunks[0] == f"Yes. {clause}"
+
+    def test_short_sentence_takes_words_when_the_opening_clause_is_too_short(self):
+        long_sentence = "Well, " + " ".join(["alpha"] * 28) + "."
+        chunks = mlx_backend.split_long_text(f"Yes. {long_sentence}")
+        assert chunks[0].startswith("Yes. Well, alpha")
+        assert len(chunks[0]) >= mlx_backend._MIN_CHUNK_CHARS
+
+    @pytest.mark.parametrize(("first_length", "topped_up"), [(59, True), (60, False)])
+    def test_top_up_applies_only_below_the_minimum_chunk_length(self, first_length, topped_up):
+        first = "x" * (first_length - 1) + "."
+        second = " ".join(["alpha"] * 25) + "."
+        chunks = mlx_backend.split_long_text(f"{first} {second}")
+        assert (chunks[0] != first) is topped_up
+
     def test_chunks_long_enough_to_stand_alone_are_not_topped_up(self):
         first = "The first sentence is comfortably longer than the minimum chunk length, so it stands."
         second = (
@@ -371,7 +400,7 @@ class TestSplitLongText:
         )
         assert mlx_backend.split_long_text(f"{first} {second}") == [first, second]
 
-    def test_mixed_paragraph_breaks_only_at_punctuation(self):
+    def test_paragraph_with_commas_breaks_only_at_punctuation(self):
         text = (
             "Switched to the four bit model. The daemon is back under launchd, and this paragraph is long enough "
             "to stream as more than one chunk, so you should hear it carry on into the second chunk without the "
