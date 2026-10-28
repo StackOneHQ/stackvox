@@ -31,6 +31,14 @@ _LOAD_LOCK = Lock()
 # bring the first streamed audio forward.
 CHUNK_CHARS = 170
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
+# Over-long sentences are cut here before falling back to word boundaries, so
+# the pause between chunks lands where a speaker would take a breath.
+_CLAUSE_BOUNDARY = re.compile(r"(?<=[,;:—–])\s+")
+# Streaming leaves a gap whenever a chunk takes longer to generate than the one
+# before it takes to play, so a short sentence sent alone ahead of a long one
+# ("Yes." then 170 characters) is the worst case for models near real time.
+# A chunk shorter than this is filled from the next sentence instead.
+_MIN_CHUNK_CHARS = 60
 
 # MLX keeps freed GPU buffers in its own cache for reuse, and by default lets it
 # grow to the device's recommended working set (tens of GB on a large Mac). A
@@ -80,33 +88,61 @@ def swapped(owner: type, name: str, value: Any) -> Iterator[None]:
             delattr(owner, name)
 
 
+def _split_words(text: str, limit: int) -> list[str]:
+    pieces: list[str] = []
+    piece = ""
+    for word in text.split():
+        candidate = f"{piece} {word}".strip()
+        if piece and len(candidate) > limit:
+            pieces.append(piece)
+            piece = word
+        else:
+            piece = candidate
+    if piece:
+        pieces.append(piece)
+    return pieces
+
+
+def _sentence_pieces(sentence: str, limit: int) -> list[str]:
+    if len(sentence) <= limit:
+        return [sentence]
+    pieces: list[str] = []
+    for clause in (part.strip() for part in _CLAUSE_BOUNDARY.split(sentence)):
+        if clause:
+            pieces.extend([clause] if len(clause) <= limit else _split_words(clause, limit))
+    return pieces
+
+
+def _top_up(chunk: str, piece: str, limit: int) -> tuple[str, str]:
+    """Move as many of ``piece``'s opening words onto ``chunk`` as ``limit`` allows."""
+    words = piece.split()
+    taken = 0
+    while taken < len(words) and len(" ".join([chunk, *words[: taken + 1]])) <= limit:
+        taken += 1
+    return " ".join([chunk, *words[:taken]]), " ".join(words[taken:])
+
+
 def split_long_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
-    """Pack prose into sentence-aware chunks no longer than ``limit``."""
+    """Pack prose into chunks no longer than ``limit``.
+
+    Chunks break between sentences where they can. A sentence longer than
+    ``limit`` breaks at clause punctuation, and only a clause still longer than
+    that breaks between words. A chunk under ``_MIN_CHUNK_CHARS`` that the next
+    piece won't fit beside takes that piece's opening words rather than going
+    out alone.
+    """
     sentences = [part.strip() for part in _SENTENCE_BOUNDARY.split(text) if part.strip()]
     chunks: list[str] = []
     current = ""
-    for sentence in sentences:
-        pieces = [sentence]
-        if len(sentence) > limit:
-            words = sentence.split()
-            pieces = []
-            piece = ""
-            for word in words:
-                candidate = f"{piece} {word}".strip()
-                if piece and len(candidate) > limit:
-                    pieces.append(piece)
-                    piece = word
-                else:
-                    piece = candidate
-            if piece:
-                pieces.append(piece)
-        for piece in pieces:
-            candidate = f"{current} {piece}".strip()
-            if current and len(candidate) > limit:
-                chunks.append(current)
-                current = piece
-            else:
-                current = candidate
+    for piece in (piece for sentence in sentences for piece in _sentence_pieces(sentence, limit)):
+        candidate = f"{current} {piece}".strip()
+        if not current or len(candidate) <= limit:
+            current = candidate
+            continue
+        if len(current) < _MIN_CHUNK_CHARS:
+            current, piece = _top_up(current, piece, limit)
+        chunks.append(current)
+        current = piece
     if current:
         chunks.append(current)
     return chunks

@@ -347,6 +347,41 @@ class TestSplitLongText:
         assert all(len(chunk) <= 50 for chunk in chunks)
         assert " ".join(chunks).split() == ["word"] * 200
 
+    def test_overlong_sentence_splits_at_clauses_before_words(self):
+        sentence = (
+            ", ".join(f"this is clause number {index} of one long sentence" for index in range(8)) + "."
+        )
+        chunks = mlx_backend.split_long_text(sentence)
+        assert len(chunks) > 1
+        assert all(len(chunk) <= mlx_backend.CHUNK_CHARS for chunk in chunks)
+        assert all(chunk.endswith((",", ".")) for chunk in chunks)
+        assert " ".join(chunks) == sentence
+
+    def test_short_sentence_takes_words_from_a_long_one_rather_than_going_alone(self):
+        long_sentence = " ".join(["alpha"] * 28) + "."
+        chunks = mlx_backend.split_long_text(f"Yes. {long_sentence}")
+        assert chunks[0].startswith("Yes. alpha")
+        assert len(chunks[0]) <= mlx_backend.CHUNK_CHARS
+        assert " ".join(chunks) == f"Yes. {long_sentence}"
+
+    def test_chunks_long_enough_to_stand_alone_are_not_topped_up(self):
+        first = "The first sentence is comfortably longer than the minimum chunk length, so it stands."
+        second = (
+            "The second " + " ".join(["sentence"] * 10) + " is long enough that the two cannot share a chunk."
+        )
+        assert mlx_backend.split_long_text(f"{first} {second}") == [first, second]
+
+    def test_mixed_paragraph_breaks_only_at_punctuation(self):
+        text = (
+            "Switched to the four bit model. The daemon is back under launchd, and this paragraph is long enough "
+            "to stream as more than one chunk, so you should hear it carry on into the second chunk without the "
+            "pause you were getting before. If there is still a gap between the sentences, let me know and we "
+            "can look at buffering ahead."
+        )
+        chunks = mlx_backend.split_long_text(text)
+        assert all(chunk.endswith((",", ".")) for chunk in chunks)
+        assert " ".join(chunks) == text
+
 
 class TestMlxThread:
     def test_load_and_generation_share_one_thread_across_callers(self, mocker, tmp_path):

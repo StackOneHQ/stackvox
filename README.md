@@ -241,8 +241,12 @@ the model. They are rejected with an error unless the `mlx` backend is in use,
 both by `speak` and by a daemon running Kokoro. `--voice` and `--lang` apply to
 Kokoro only. Playback streams in chunks of about two sentences (up to ~170
 characters), so the first audio arrives once the first chunk is generated;
-short chunks also stop models drifting off-script on long text. Models slower
-than real time will pause between chunks.
+short chunks also stop models drifting off-script on long text. A sentence too
+long for one chunk is split at a comma, semicolon, colon or dash where it has
+one, and a very short sentence is joined to the start of the next rather than
+sent alone, since a short chunk ahead of a long one leaves a pause while the
+long one generates. Models slower than real time will still pause between
+chunks.
 
 ### Model adapters
 
