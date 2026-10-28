@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import sys
 import threading
+import weakref
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
 
 from stackvox import mlx_backend
+
+_limit_buffer_cache = mlx_backend._limit_buffer_cache
+
+
+@pytest.fixture(autouse=True)
+def buffer_cache(mocker):
+    """MLX's cache controls, mocked: MLX isn't installed for the tests."""
+    return SimpleNamespace(
+        limit=mocker.patch.object(mlx_backend, "_limit_buffer_cache"),
+        clear=mocker.patch.object(mlx_backend, "_clear_buffer_cache"),
+    )
 
 
 @pytest.fixture
@@ -224,6 +236,66 @@ class TestSynthesize:
         assert all(
             len(call.kwargs["text"]) <= mlx_backend.CHUNK_CHARS for call in model.generate.call_args_list
         )
+
+
+class TestBufferCache:
+    def test_is_capped_on_the_mlx_thread_before_the_model_loads(self, mocker, tmp_path, buffer_cache):
+        seen = []
+        buffer_cache.limit.side_effect = lambda: seen.append(("limit", threading.current_thread().name))
+        mocker.patch.object(
+            mlx_backend,
+            "_load_model",
+            side_effect=lambda *args: seen.append(("load", threading.current_thread().name)),
+        )
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        mlx_backend.MlxBackend(model_dir)
+
+        assert seen == [("limit", "stackvox-mlx"), ("load", "stackvox-mlx")]
+
+    def test_is_cleared_after_each_generation(self, backend, buffer_cache):
+        engine, model = backend
+        model.generate.side_effect = lambda **kwargs: iter(
+            [SimpleNamespace(audio=np.ones(1), sample_rate=44100)]
+        )
+
+        engine.synthesize("one")
+        engine.synthesize("two")
+
+        assert buffer_cache.clear.call_count == 2
+
+    def test_is_cleared_when_generation_fails(self, backend, buffer_cache):
+        engine, model = backend
+        model.generate.side_effect = RuntimeError("gpu fell over")
+
+        with pytest.raises(RuntimeError):
+            engine.synthesize("hello")
+
+        buffer_cache.clear.assert_called_once()
+
+    def test_is_cleared_after_the_generated_audio_is_released(self, backend, buffer_cache):
+        engine, model = backend
+
+        class Result:
+            audio = np.ones(1)
+            sample_rate = 44100
+
+        pending = [Result()]
+        released = weakref.ref(pending[0])
+        model.generate.side_effect = lambda **kwargs: iter([pending.pop()])
+        alive: list[bool] = []
+        buffer_cache.clear.side_effect = lambda: alive.append(released() is not None)
+
+        engine.synthesize("hello")
+
+        assert alive == [False]
+
+    def test_missing_mlx_is_a_load_error(self, mocker):
+        mocker.patch.dict(sys.modules, {"mlx": None, "mlx.core": None})
+
+        with pytest.raises(mlx_backend.ModelLoadError, match="requires MLX Audio"):
+            _limit_buffer_cache()
 
 
 class TestSwapped:

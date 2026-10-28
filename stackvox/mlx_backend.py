@@ -32,6 +32,13 @@ _LOAD_LOCK = Lock()
 CHUNK_CHARS = 170
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# MLX keeps freed GPU buffers in its own cache for reuse, and by default lets it
+# grow to the device's recommended working set (tens of GB on a large Mac). A
+# long-running daemon generating on and off would hold all of it, so cap it.
+_BUFFER_CACHE_LIMIT_BYTES = 1 << 30
+
+_MISSING_MLX = "the mlx backend requires MLX Audio; install it with `pip install 'stackvox[mlx]'`"
+
 # Cap on how much of an underlying error is echoed; MLX Audio's messages can
 # list hundreds of parameter names.
 _ERROR_SUMMARY_CHARS = 200
@@ -138,9 +145,7 @@ def _load_model(model_dir: Path, adapter_path: Path | None) -> Any:
     try:
         from mlx_audio.tts.utils import load_model
     except ImportError as exc:  # pragma: no cover - depends on optional install
-        raise ModelLoadError(
-            "the mlx backend requires MLX Audio; install it with `pip install 'stackvox[mlx]'`"
-        ) from exc
+        raise ModelLoadError(_MISSING_MLX) from exc
     if adapter_path is None:
         with _LOAD_LOCK:
             try:
@@ -159,6 +164,21 @@ def _load_model(model_dir: Path, adapter_path: Path | None) -> Any:
             raise ModelLoadError(
                 f"model adapter {adapter_path} failed to load the model in {model_dir} ({_summarize(exc)})"
             ) from exc
+
+
+def _limit_buffer_cache() -> None:
+    try:
+        import mlx.core as mx
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise ModelLoadError(_MISSING_MLX) from exc
+
+    mx.set_cache_limit(_BUFFER_CACHE_LIMIT_BYTES)
+
+
+def _clear_buffer_cache() -> None:
+    import mlx.core as mx
+
+    mx.clear_cache()
 
 
 def _load_audio(path: Path, sample_rate: int) -> Any:
@@ -209,6 +229,7 @@ class MlxBackend:
             raise ModelLoadError(f"model directory not found: {model_dir}")
         self.model_dir = model_dir
         self._mlx_thread = _MlxThread()
+        self._mlx_thread.call(_limit_buffer_cache)
         self._model: Any = self._mlx_thread.call(lambda: _load_model(model_dir, adapter))
 
     def synthesize(
@@ -242,7 +263,22 @@ class MlxBackend:
         self, text: str, kwargs: dict[str, Any], audio_path: Path | None, reference_text: str | None
     ) -> tuple[np.ndarray, int]:
         """Runs on the MLX thread: decoding the reference and converting results
-        to NumPy both evaluate MLX arrays, so they belong here too."""
+        to NumPy both evaluate MLX arrays, so they belong here too.
+
+        Empties MLX's buffer cache before returning: models don't reliably do it
+        themselves, and what one request leaves behind is mostly sized for that
+        request rather than the next. The work lives in ``_render`` so its MLX
+        arrays are released, and their buffers already in the cache, by the
+        time it is cleared.
+        """
+        try:
+            return self._render(text, kwargs, audio_path, reference_text)
+        finally:
+            _clear_buffer_cache()
+
+    def _render(
+        self, text: str, kwargs: dict[str, Any], audio_path: Path | None, reference_text: str | None
+    ) -> tuple[np.ndarray, int]:
         if audio_path is not None:
             kwargs = {
                 **kwargs,
