@@ -29,7 +29,7 @@ ruff format .        # auto-format
 ruff format --check . # verify formatting without changing files
 ```
 
-The tests mock out `Stackvox` so they don't download the 340 MB model — CI runs them across Python 3.10–3.13 on Ubuntu. Please keep that property: any new test that wants to touch real synthesis should be marked and skipped by default.
+The tests mock out `Stackvox` so they don't download the 340 MB model — CI runs them across Python 3.11–3.14 on Ubuntu. Please keep that property: any new test that wants to touch real synthesis should be marked and skipped by default.
 
 ## Commit and branch style
 

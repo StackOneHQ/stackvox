@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -76,7 +76,7 @@ class TestCache:
         assert updates.read_cache() is None
 
     def test_round_trip(self):
-        when = datetime(2026, 4, 30, 12, 0, tzinfo=timezone.utc)
+        when = datetime(2026, 4, 30, 12, 0, tzinfo=UTC)
         updates.write_cache("0.5.0", now=when)
         entry = updates.read_cache()
         assert entry is not None
@@ -166,7 +166,7 @@ class TestCheckForUpdate:
     def test_uses_cache_when_fresh(self, mocker):
         mocker.patch.object(updates, "_current_version", return_value="0.3.1")
         # Cache from 1 hour ago — well within the 24h TTL.
-        when = datetime.now(timezone.utc) - timedelta(hours=1)
+        when = datetime.now(UTC) - timedelta(hours=1)
         updates.write_cache("0.5.0", now=when)
         fetch = mocker.patch.object(updates, "fetch_latest_version")
 
@@ -179,7 +179,7 @@ class TestCheckForUpdate:
 
     def test_refetches_when_cache_stale(self, mocker):
         mocker.patch.object(updates, "_current_version", return_value="0.3.1")
-        when = datetime.now(timezone.utc) - timedelta(days=2)
+        when = datetime.now(UTC) - timedelta(days=2)
         updates.write_cache("0.4.0", now=when)
         fetch = mocker.patch.object(updates, "fetch_latest_version", return_value="0.5.0")
 
@@ -191,7 +191,7 @@ class TestCheckForUpdate:
 
     def test_falls_back_to_stale_cache_on_fetch_failure(self, mocker):
         mocker.patch.object(updates, "_current_version", return_value="0.3.1")
-        when = datetime.now(timezone.utc) - timedelta(days=2)
+        when = datetime.now(UTC) - timedelta(days=2)
         updates.write_cache("0.4.0", now=when)
         mocker.patch.object(updates, "fetch_latest_version", return_value=None)
 

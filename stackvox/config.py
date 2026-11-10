@@ -38,16 +38,11 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - covered by 3.10 CI
-    import tomli as tomllib
 
 from stackvox.engine import BACKENDS, DEFAULT_LANG, DEFAULT_SPEED, DEFAULT_VOICE, REFERENCE_PAIR
 from stackvox.voices import BUILTIN_VOICES, VoiceMix
