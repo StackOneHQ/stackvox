@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/StackOneHQ/stackvox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/StackOneHQ/stackvox/actions/workflows/ci.yml)
 [![coverage](https://codecov.io/gh/StackOneHQ/stackvox/branch/main/graph/badge.svg)](https://codecov.io/gh/StackOneHQ/stackvox)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![license](https://img.shields.io/badge/license-Apache%202.0-blue)](./LICENSE)
 
 Offline TTS using [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) via [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Apache 2.0 model, ~340MB, CPU real-time, plays straight to system audio. Designed to be importable as a Python library, drivable as a CLI, or poked via a unix socket for ~13ms speech requests from shell scripts.
@@ -368,7 +368,7 @@ Before each utterance the daemon resets PortAudio so it picks up the current sys
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - macOS or Linux
 - `nc` (BSD netcat — default on macOS, `netcat-openbsd` on Linux) for the bash helper
 
