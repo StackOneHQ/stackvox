@@ -18,19 +18,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
+import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - covered by 3.10 CI
-    import tomli as tomllib
 
 from stackvox.paths import cache_dir
 
@@ -155,7 +150,7 @@ def write_cache(latest: str, *, now: datetime | None = None) -> None:
     path = cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "checked_at": (now or datetime.now(timezone.utc)).isoformat(),
+        "checked_at": (now or datetime.now(UTC)).isoformat(),
         "latest": latest,
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -199,7 +194,7 @@ def check_for_update(*, now: datetime | None = None) -> UpdateInfo | None:
     """
     if is_disabled():
         return None
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     entry = read_cache()
     if entry is None or (now - entry[0]) > CACHE_TTL:
         latest = fetch_latest_version()

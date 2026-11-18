@@ -7,7 +7,7 @@ name = "stackvox"
 version = "0.16.2"
 description = "Offline TTS library using Kokoro-82M"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "StackOne Technologies Ltd.", email = "support@stackone.com" }]
@@ -25,7 +25,6 @@ dependencies = [
     "soundfile>=0.12.1",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
-    "tomli>=2.0;python_version<'3.11'",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +64,7 @@ stackvox = ["py.typed", "data/stackvox-say"]
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.format]
 # Ruff 0.16 began formatting Python code blocks inside Markdown. Ours are
@@ -116,8 +115,8 @@ skip_covered = false
 [tool.mypy]
 # Matches the interpreter CI runs mypy under, and must be >= 3.12: numpy's
 # bundled stubs use PEP 695 `type` aliases, which mypy rejects as a syntax
-# error when told to target an older Python. Runtime support for 3.10+ is
-# still verified by the pytest matrix (py3.10–3.13).
+# error when told to target an older Python. Runtime support for 3.11+ is
+# still verified by the pytest matrix (py3.11–3.14).
 python_version = "3.12"
 files = ["stackvox", "tests"]
 warn_unused_ignores = true
@@ -128,9 +127,8 @@ no_implicit_optional = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-# Third-party deps without inline type stubs (or, for `tomli`, a 3.10-only
-# fallback that's not installed on the typechecker's Python).
-module = ["kokoro_onnx", "mlx.*", "mlx_audio.*", "onnxruntime", "sounddevice", "soundfile", "tomli"]
+# Third-party deps without inline type stubs.
+module = ["kokoro_onnx", "mlx.*", "mlx_audio.*", "onnxruntime", "sounddevice", "soundfile"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
