@@ -57,7 +57,10 @@ jobs:
           cache: pip
       # sounddevice needs PortAudio; phonemizer (pulled in by kokoro-onnx) needs espeak-ng.
       - name: install system audio/phoneme deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libportaudio2 espeak-ng
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 espeak-ng pulseaudio
+          pulseaudio --start --exit-idle-time=-1
       - run: pip install -e ".[dev]"
       - name: run tests (with coverage on 3.12)
         run: |
