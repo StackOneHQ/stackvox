@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -42,8 +43,10 @@ def fake_ort(mocker):
 
 @pytest.fixture
 def fake_audio(mocker):
-    """Mock the sounddevice surface used by Stackvox (streaming + speak_sequence)."""
-    mocker.patch.object(engine.sd, "OutputStream")
+    """Mock the sounddevice surface used by Stackvox (streaming + speak_sequence).
+    The stream always has room, so each chunk goes out in one write."""
+    output_stream = mocker.patch.object(engine.sd, "OutputStream")
+    output_stream.return_value.write_available = 1_000_000
     mocker.patch.object(engine.sd, "play")
     mocker.patch.object(engine.sd, "wait")
     mocker.patch.object(engine.sd, "stop")
@@ -357,6 +360,82 @@ class TestSpeak:
         tts.stop()
         tts.speak("hello world")
         engine.sd.OutputStream.assert_called()
+
+    def test_drains_the_stream_when_playback_finishes(self, fake_kokoro, fake_audio):
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+
+        engine.Stackvox().speak("hello")
+
+        stream = engine.sd.OutputStream.return_value
+        stream.stop.assert_called_once()
+        stream.abort.assert_not_called()
+
+    def test_aborts_the_stream_when_the_device_stops_taking_audio(self, fake_kokoro, fake_audio, mocker):
+        # stop() would wait for the queued audio to play out, which a stalled
+        # device never does.
+        mocker.patch.object(engine, "_STALL_SECONDS", 0.02)
+        fake_kokoro.return_value.create.return_value = (np.zeros(4, dtype=np.float32), 24000)
+        stream = engine.sd.OutputStream.return_value
+        stream.write_available = 0
+
+        with pytest.raises(engine.OutputStalledError):
+            engine.Stackvox().speak("hello")
+
+        stream.abort.assert_called_once()
+        stream.stop.assert_not_called()
+        stream.close.assert_called_once()
+
+
+class TestWrite:
+    def test_writes_only_what_the_device_has_room_for(self, mocker):
+        stream = mocker.Mock()
+        type(stream).write_available = mocker.PropertyMock(side_effect=[3, 3, 10])
+        samples = np.arange(8, dtype=np.float32)
+
+        engine._write(stream, samples, threading.Event())
+
+        actual = [call.args[0].tolist() for call in stream.write.call_args_list]
+        assert actual == [[0, 1, 2], [3, 4, 5], [6, 7]]
+
+    def test_waits_while_the_device_is_briefly_full(self, mocker):
+        stream = mocker.Mock()
+        type(stream).write_available = mocker.PropertyMock(side_effect=[0, 0, 8])
+
+        engine._write(stream, np.zeros(8, dtype=np.float32), threading.Event())
+
+        stream.write.assert_called_once()
+
+    def test_raises_once_the_device_takes_nothing_for_the_stall_limit(self, mocker):
+        mocker.patch.object(engine, "_STALL_SECONDS", 0.02)
+        stream = mocker.Mock(write_available=0)
+
+        with pytest.raises(engine.OutputStalledError):
+            engine._write(stream, np.zeros(8, dtype=np.float32), threading.Event())
+
+        stream.write.assert_not_called()
+
+    def test_measures_the_stall_from_the_last_write_that_went_through(self, mocker):
+        # Slow but moving output (one frame a poll) is not a stall, however
+        # long the whole chunk takes.
+        mocker.patch.object(engine, "_STALL_SECONDS", 0.05)
+        frames = 12
+        stream = mocker.Mock()
+        type(stream).write_available = mocker.PropertyMock(side_effect=[1, 0, 0] * frames)
+        started = time.monotonic()
+
+        engine._write(stream, np.zeros(frames, dtype=np.float32), threading.Event())
+
+        assert stream.write.call_count == frames
+        assert time.monotonic() - started > engine._STALL_SECONDS
+
+    def test_returns_without_writing_once_stopped(self, mocker):
+        stream = mocker.Mock(write_available=0)
+        stop_event = threading.Event()
+        stop_event.set()
+
+        engine._write(stream, np.zeros(8, dtype=np.float32), stop_event)
+
+        stream.write.assert_not_called()
 
 
 class TestSplitSentences:

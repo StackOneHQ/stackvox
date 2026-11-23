@@ -46,6 +46,7 @@ from stackvox.engine import (
     DEFAULT_SPEED,
     DEFAULT_VOICE,
     MLX_OPTIONS,
+    OutputStalledError,
     Playback,
     Stackvox,
 )
@@ -213,13 +214,13 @@ def _exit_wedged() -> None:
     """Exit hard so a fresh daemon can take over from a wedged one.
 
     On macOS the worker has been seen deadlocked inside PortAudio's stream stop,
-    waiting on a CoreAudio lock held by CoreAudio's own IO thread, and parked
-    for days in a blocking write to an output device that stopped taking audio,
-    which `cancel`'s stream abort didn't release. A normal shutdown didn't get
-    out of the first (`stop` timed out with the process still alive), so this
-    uses `os._exit`. The socket goes first: clients that start
-    the daemon on demand do so when the socket is missing, and until it is gone
-    they keep getting `busy`.
+    waiting on a CoreAudio lock held by CoreAudio's own IO thread. It was also
+    seen parked for days in a blocking write to an output device that stopped
+    taking audio, which the engine now gives up on by itself (`OutputStalledError`,
+    replayed by `_play`). A normal shutdown didn't get out of the first (`stop`
+    timed out with the process still alive), so this uses `os._exit`. The socket
+    goes first: clients that start the daemon on demand do so when the socket is
+    missing, and until it is gone they keep getting `busy`.
     """
     _remove_runtime_files()
     os._exit(os.EX_SOFTWARE)
@@ -290,16 +291,7 @@ class _DaemonState:
                 _refresh_audio_devices()
                 _audio_dirty.clear()
             try:
-                generation_kwargs: dict[str, Any] = {
-                    key: req.get(key, self.generation_defaults.get(key)) for key in MLX_OPTIONS
-                }
-                playback = self.tts.speak(
-                    req["text"],
-                    voice=req.get("voice"),
-                    speed=req.get("speed"),
-                    lang=req.get("lang"),
-                    **generation_kwargs,
-                )
+                playback = self._play(req)
             except Exception:
                 logger.exception("playback error")
                 # Failed playback might be a stale audio context; mark dirty
@@ -313,6 +305,34 @@ class _DaemonState:
                         )
                     )
             self.deadline = None
+
+    def _play(self, req: dict) -> Playback | None:
+        """Speak one request, replaying it once on a fresh stream if the output
+        device stops taking audio.
+
+        PortAudio is reset first, in case the device went away or the default
+        output changed. The replay gets a fresh deadline.
+        """
+        try:
+            return self._speak(req)
+        except OutputStalledError:
+            logger.warning("output device stopped taking audio; resetting audio devices and replaying")
+            _refresh_audio_devices()
+            _audio_dirty.clear()
+            self.deadline = time.monotonic() + _utterance_budget(req["text"])
+            return self._speak(req)
+
+    def _speak(self, req: dict) -> Playback | None:
+        generation_kwargs: dict[str, Any] = {
+            key: req.get(key, self.generation_defaults.get(key)) for key in MLX_OPTIONS
+        }
+        return self.tts.speak(
+            req["text"],
+            voice=req.get("voice"),
+            speed=req.get("speed"),
+            lang=req.get("lang"),
+            **generation_kwargs,
+        )
 
     def overrun(self, now: float) -> float | None:
         """Seconds the current request has run past its deadline, or None if
