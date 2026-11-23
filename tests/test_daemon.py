@@ -428,11 +428,12 @@ class TestWorkerLog:
 
 
 class TestStalledOutput:
-    def test_resets_audio_devices_and_replays_the_request(self, state, caplog):
+    def test_resets_audio_devices_and_replays_the_request(self, state, caplog, mocker):
+        refresh = mocker.patch.object(daemon, "_refresh_audio_devices")
         refreshes_before_each_attempt = []
 
         def speak(*args, **kwargs):
-            refreshes_before_each_attempt.append(daemon._refresh_audio_devices.call_count)
+            refreshes_before_each_attempt.append(refresh.call_count)
             if len(refreshes_before_each_attempt) == 1:
                 raise OutputStalledError("output device took no audio for 5s")
             return Playback(first_audio_at=time.monotonic(), audio_seconds=1.0)
