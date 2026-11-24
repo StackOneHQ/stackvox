@@ -12,7 +12,7 @@ import time
 import pytest
 
 from stackvox import daemon
-from stackvox.engine import Playback
+from stackvox.engine import OutputStalledError, Playback
 
 
 class TestPidAlive:
@@ -425,6 +425,48 @@ class TestWorkerLog:
         assert state.tts.speak.called
         assert state.deadline is None
         assert not any("spoke" in message for message in caplog.messages)
+
+
+class TestStalledOutput:
+    def test_resets_audio_devices_and_replays_the_request(self, state, caplog, mocker):
+        refresh = mocker.patch.object(daemon, "_refresh_audio_devices")
+        refreshes_before_each_attempt = []
+
+        def speak(*args, **kwargs):
+            refreshes_before_each_attempt.append(refresh.call_count)
+            if len(refreshes_before_each_attempt) == 1:
+                raise OutputStalledError("output device took no audio for 5s")
+            return Playback(first_audio_at=time.monotonic(), audio_seconds=1.0)
+
+        state.tts.speak.side_effect = speak
+
+        with caplog.at_level(logging.INFO, logger="stackvox.daemon"):
+            state.submit({"text": "hello"})
+            _wait_until(lambda: any("spoke" in message for message in caplog.messages))
+
+        first, second = refreshes_before_each_attempt
+        assert second == first + 1
+        assert any("stopped taking audio" in message for message in caplog.messages)
+        assert any(message.startswith("spoke 5 chars") for message in caplog.messages)
+
+    def test_replays_only_once(self, state, caplog):
+        state.tts.speak.side_effect = OutputStalledError("output device took no audio for 5s")
+
+        with caplog.at_level(logging.INFO, logger="stackvox.daemon"):
+            state.submit({"text": "hello"})
+            _wait_until(lambda: any("playback error" in message for message in caplog.messages))
+
+        assert state.tts.speak.call_count == 2
+        assert state.deadline is None
+
+    def test_does_not_replay_other_playback_errors(self, state, caplog):
+        state.tts.speak.side_effect = RuntimeError("device gone")
+
+        with caplog.at_level(logging.INFO, logger="stackvox.daemon"):
+            state.submit({"text": "hello"})
+            _wait_until(lambda: any("playback error" in message for message in caplog.messages))
+
+        assert state.tts.speak.call_count == 1
 
 
 class TestOverrun:

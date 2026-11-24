@@ -44,6 +44,15 @@ REFERENCE_PAIR = ("reference_audio", "reference_text")
 # silence, and ramp the opening samples up from zero to avoid an onset click.
 _PRIME_SILENCE_SECONDS = 0.12
 _FADE_IN_SECONDS = 0.008
+# How long the output device may take no audio before playback gives up on it.
+# Well past a Bluetooth codec switch, which can hold the device for a second or
+# two before it starts pulling.
+_STALL_SECONDS = 5.0
+_WRITE_POLL_SECONDS = 0.005
+
+
+class OutputStalledError(RuntimeError):
+    """The output device stopped taking audio partway through playback."""
 
 
 @dataclass(frozen=True)
@@ -171,6 +180,29 @@ def _fade_in(samples: np.ndarray, sample_rate: int) -> np.ndarray:
     faded = np.array(samples, dtype="float32", copy=True)
     faded[:ramp_len] *= np.linspace(0.0, 1.0, ramp_len, dtype="float32")
     return faded
+
+
+def _write(stream: sd.OutputStream, samples: np.ndarray, stop_event: threading.Event) -> None:
+    """Write ``samples`` as the device makes room, raising ``OutputStalledError``
+    if it takes nothing for ``_STALL_SECONDS``.
+
+    A plain blocking ``write`` waits for room forever, and on macOS a device that
+    stops pulling audio (seen with a USB DAC) leaves it parked with no CoreAudio
+    IO thread left to drain the buffer. Returns early once ``stop_event`` is set.
+    """
+    written = 0
+    last_progress = time.monotonic()
+    while written < len(samples) and not stop_event.is_set():
+        available = stream.write_available
+        if available > 0:
+            end = written + available
+            stream.write(samples[written:end])
+            written = min(end, len(samples))
+            last_progress = time.monotonic()
+        elif time.monotonic() - last_progress > _STALL_SECONDS:
+            raise OutputStalledError(f"output device took no audio for {_STALL_SECONDS:.0f}s")
+        else:
+            time.sleep(_WRITE_POLL_SECONDS)
 
 
 class Stackvox:
@@ -551,6 +583,7 @@ class Stackvox:
             top_k=top_k,
         )
         stream: sd.OutputStream | None = None
+        stalled = False
         first_audio_at: float | None = None
         audio_seconds = 0.0
         try:
@@ -568,16 +601,19 @@ class Stackvox:
                         self._stream = stream
                     prime = int(sample_rate * _PRIME_SILENCE_SECONDS)
                     if prime > 0:
-                        stream.write(np.zeros(prime, dtype="float32"))
+                        _write(stream, np.zeros(prime, dtype="float32"), stop_event)
                     samples = _fade_in(samples, sample_rate)
                     first_audio_at = time.monotonic()
                 try:
-                    stream.write(samples)
+                    _write(stream, samples, stop_event)
                 except Exception:
                     if stop_event.is_set():
                         break  # aborted by stop(); expected
                     raise
                 audio_seconds += len(samples) / sample_rate
+        except OutputStalledError:
+            stalled = True
+            raise
         finally:
             # Release the output device before draining the synth thread, so a
             # stop() doesn't hold the device open for however long the in-flight
@@ -586,7 +622,12 @@ class Stackvox:
                 self._stream = None
             if stream is not None:
                 try:
-                    stream.stop()
+                    # stop() waits for the queued audio to play out, which a
+                    # stalled device never does.
+                    if stalled:
+                        stream.abort()
+                    else:
+                        stream.stop()
                     stream.close()
                 except Exception:
                     logger.debug("stream teardown failed", exc_info=True)
